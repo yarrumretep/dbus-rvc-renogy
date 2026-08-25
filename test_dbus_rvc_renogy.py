@@ -359,6 +359,10 @@ class FakeSocket:
         self.closed = False
         self.recv_error = None
         self.frames = []
+        self.socket_options = []
+
+    def setsockopt(self, level, option, value):
+        self.socket_options.append((level, option, value))
 
     def bind(self, address):
         self.bound = address
@@ -592,9 +596,12 @@ class ControllerStartupTests(unittest.TestCase):
             len(self.sockets) - initial_socket_count,
             len(bridge.CAN_REBIND_DELAYS))
 
-    def test_any_can_traffic_prevents_boot_time_rebind(self):
-        data = bytes(8)
-        can_id = bridge.CAN_EFF_FLAG | (0x12345 << 8) | 0x42
+    def test_any_filtered_can_traffic_prevents_boot_time_rebind(self):
+        # Wrong DC-source instance: delivered by the DGN filter but not a
+        # usable aggregate measurement.
+        data = bytes.fromhex("02780a0120013577")
+        can_id = (bridge.CAN_EFF_FLAG
+                  | (bridge.DGN_DC_SOURCE_STATUS_1 << 8) | 0x42)
         frame = struct.pack("<IB3x8s", can_id, len(data), data)
         self.controller._sock.frames.append(frame)
         self.controller._on_can_frame(
@@ -604,6 +611,23 @@ class ControllerStartupTests(unittest.TestCase):
         self.controller._tick()
 
         self.assertEqual(len(self.sockets), 1)
+
+    def test_can_socket_filters_exactly_the_six_aggregate_dgns(self):
+        options = self.sockets[0].socket_options
+        self.assertEqual(len(options), 1)
+        level, option, raw_filters = options[0]
+        self.assertEqual(level, bridge.SOL_CAN_RAW)
+        self.assertEqual(option, bridge.CAN_RAW_FILTER)
+
+        filters = [
+            struct.unpack_from("=II", raw_filters, offset)
+            for offset in range(0, len(raw_filters), 8)
+        ]
+        expected_mask = bridge.CAN_EFF_FLAG | (0x1FFFF << 8)
+        self.assertEqual(
+            filters,
+            [(bridge.CAN_EFF_FLAG | (dgn << 8), expected_mask)
+             for dgn in sorted(bridge.AGGREGATE_DGNS)])
 
     def test_network_down_receive_error_is_retried_without_registering_bms(self):
         first_socket = self.sockets[0]

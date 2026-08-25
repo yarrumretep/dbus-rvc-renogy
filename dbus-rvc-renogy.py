@@ -27,6 +27,7 @@ per-pack family in the observed topology.
 Safety properties:
 
 * Never transmits on CAN.
+* Uses kernel CAN filters so unrelated RV-C traffic does not wake the bridge.
 * Publishes zero charge current until a fresh, valid status-4 frame arrives.
 * Publishes zero charge current when the aggregate measurement stream is stale.
 * Rejects implausible charge-voltage limits and clamps only hard maxima.
@@ -44,7 +45,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.16"
+BRIDGE_VERSION = "0.4.17"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -190,6 +191,8 @@ CAN_EFF_MASK = 0x1FFFFFFF
 # be exercised by offline tests on non-Linux development systems.
 SOCKET_AF_CAN = getattr(socket, "AF_CAN", 29)
 SOCKET_CAN_RAW = getattr(socket, "CAN_RAW", 1)
+SOL_CAN_RAW = getattr(socket, "SOL_CAN_RAW", 101)
+CAN_RAW_FILTER = getattr(socket, "CAN_RAW_FILTER", 1)
 
 DGN_DC_SOURCE_STATUS_1 = 0x1FFFD
 DGN_DC_SOURCE_STATUS_2 = 0x1FFFC
@@ -206,6 +209,17 @@ AGGREGATE_DGNS = frozenset((
     DGN_DC_SOURCE_STATUS_6,
     DGN_DC_SOURCE_STATUS_11,
 ))
+
+
+def _aggregate_can_filters():
+    """Build Linux can_filter entries matching DGN while ignoring SA/priority."""
+    dgn_mask = 0x1FFFF << 8
+    return b"".join(
+        struct.pack(
+            "=II",
+            CAN_EFF_FLAG | (dgn << 8),
+            CAN_EFF_FLAG | dgn_mask)
+        for dgn in sorted(AGGREGATE_DGNS))
 
 
 def _u8(data, offset):
@@ -636,6 +650,8 @@ class RvcBattery:
         try:
             sock = self._socket_factory(
                 SOCKET_AF_CAN, socket.SOCK_RAW, SOCKET_CAN_RAW)
+            sock.setsockopt(SOL_CAN_RAW, CAN_RAW_FILTER,
+                            _aggregate_can_filters())
             sock.bind((CAN_INTERFACE,))
             sock.setblocking(False)
             watch = self._glib.io_add_watch(

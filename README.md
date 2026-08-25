@@ -73,6 +73,8 @@ the aggregator's bank-level charge limit.
 - makes at most two read-only CAN socket rebinds when a newly opened socket
   sees no CAN traffic during boot, and exponentially backs off genuine open
   failures;
+- installs kernel CAN filters for the six aggregate messages so unrelated
+  traffic on a busy RV-C network does not wake the Python service;
 - discovers the priority-120 Renogy aggregate publisher across the valid RV-C
   address space and follows an aggregate-role change after the previous source
   becomes silent;
