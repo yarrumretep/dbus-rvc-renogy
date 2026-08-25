@@ -53,7 +53,7 @@ if [ -L "$ACTIVE_SERVICE" ]; then
         echo "$ACTIVE_SERVICE points somewhere else; refusing to remove it" >&2
         exit 1
     fi
-    svc -d "$ACTIVE_SERVICE" 2>/dev/null || true
+    svc -dx "$ACTIVE_SERVICE" "$ACTIVE_SERVICE/log" 2>/dev/null || true
     rm "$ACTIVE_SERVICE"
     echo "Removed $ACTIVE_SERVICE; package files remain in $PACKAGE_DIR"
 elif [ -e "$ACTIVE_SERVICE" ]; then

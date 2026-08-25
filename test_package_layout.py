@@ -83,6 +83,7 @@ class PackageLayoutTests(unittest.TestCase):
             log_root = temp / "log"
             rc_local = temp / "data" / "rc.local"
             fake_bin = temp / "bin"
+            svc_log = temp / "svc.log"
 
             package.mkdir(parents=True)
             service_root.mkdir()
@@ -102,7 +103,11 @@ class PackageLayoutTests(unittest.TestCase):
                 encoding="utf-8")
 
             fake_svc = fake_bin / "svc"
-            fake_svc.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_svc.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >> \"$RVC_RENOGY_SVC_LOG\"\n"
+                "exit 0\n",
+                encoding="utf-8")
             fake_svc.chmod(0o755)
 
             env = os.environ.copy()
@@ -112,6 +117,7 @@ class PackageLayoutTests(unittest.TestCase):
                 "RVC_RENOGY_SERVICE_ROOT": str(service_root),
                 "RVC_RENOGY_LOG_ROOT": str(log_root),
                 "RVC_RENOGY_RC_LOCAL": str(rc_local),
+                "RVC_RENOGY_SVC_LOG": str(svc_log),
             })
 
             for _ in range(2):
@@ -151,6 +157,11 @@ class PackageLayoutTests(unittest.TestCase):
             self.assertIn(existing, contents)
             self.assertNotIn("dbus-rvc-renogy", contents)
             self.assertFalse((service_root / "dbus-rvc-renogy").exists())
+            self.assertIn(
+                "-dx %s %s/log" % (
+                    service_root / "dbus-rvc-renogy",
+                    service_root / "dbus-rvc-renogy"),
+                svc_log.read_text(encoding="utf-8").splitlines())
 
 
 if __name__ == "__main__":

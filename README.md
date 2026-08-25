@@ -319,6 +319,10 @@ Other commands already present in `rc.local` remain unchanged. If the final
 top-level command is `exit 0`, the installer places its block before it;
 conditional or earlier exits are not mistaken for the file terminator.
 
+The uninstaller stops and exits both the service supervisor and its logging
+subservice before removing the `/service` link; package files and logs remain
+available for recovery.
+
 Confirm that the installed process reports the expected version:
 
 ```sh
