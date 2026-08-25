@@ -11,7 +11,7 @@ This bridge is specifically validated with the Renogy REGO
 The defaults match the tested three-pack, 1200 Ah installation:
 
 - RV-C interface: `can0`
-- Renogy bank aggregator source address: `0x8D`
+- Renogy bank aggregator source address: automatically discovered
 - Venus device instance: `1`
 - Maximum accepted charge voltage: `14.6 V`
 - Maximum accepted charge current: `300 A`
@@ -42,8 +42,11 @@ not malformed Renogy status traffic.
 
 ## REGO bank interface
 
-In the validated topology, Renogy NAD `0x8D` is the bank aggregator. It
-publishes standard RV-C messages for DC source instance 1 and priority 120:
+In the validated topology, one Renogy node acts as the bank aggregator and
+publishes standard RV-C messages for DC source instance 1 and priority 120.
+The aggregate role moved from source address `0x8D` to `0x8E` after a bank
+restart, so the bridge discovers the publisher from its complete bank-level
+frame set rather than pinning a source address:
 
 | DGN | Message | Observed value/rate |
 | --- | --- | --- |
@@ -67,6 +70,8 @@ the aggregator's bank-level charge limit.
   D-Bus BMS service, avoiding a disconnected service during GX startup;
 - rebinds its read-only CAN socket if boot-time interface setup leaves it
   without fresh aggregate measurements;
+- discovers the Renogy aggregate publisher and follows an aggregate-role
+  change after the previous source becomes silent;
 - publishes zero charge current until measurement and charge-limit streams are
   both fresh and valid;
 - publishes zero charge current if either stream becomes stale;
@@ -87,8 +92,10 @@ python3 -m py_compile dbus-rvc-renogy.py rvc-inventory.py
 ```
 
 The tests replay captured aggregate frames and cover polarity, capacity,
-limits, stale-data fail-safe behavior, invalid limits, the Venus 3.32 D-Bus
-contract, per-pack diagnostic decoding, and the persistent service package.
+limits, stale-data fail-safe behavior, invalid limits, automatic aggregate
+discovery and handover, rejection of the GX's own RV-C rebroadcast, the Venus
+3.32 D-Bus contract, per-pack diagnostic decoding, and the persistent service
+package.
 
 ## Passive per-battery diagnostics
 
@@ -134,11 +141,16 @@ Supported variables are:
 
 ```sh
 export RVC_RENOGY_CAN_INTERFACE=can0
-export RVC_RENOGY_SOURCE_ADDRESS=0x8D
+export RVC_RENOGY_SOURCE_ADDRESS=auto
 export RVC_RENOGY_DEVICE_INSTANCE=1
 export RVC_RENOGY_CVL_CEILING=14.6
 export RVC_RENOGY_CCL_CEILING=300.0
 ```
+
+Source-address discovery is automatic by default. The REGO bank can elect a
+different physical battery as its aggregate publisher after a restart, so a
+fixed address such as `0x8D` is suitable only as a temporary diagnostic
+override.
 
 ## Controlled first run
 

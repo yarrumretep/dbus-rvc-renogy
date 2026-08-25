@@ -3,6 +3,7 @@
 
 import importlib.util
 from pathlib import Path
+import struct
 import unittest
 
 
@@ -146,6 +147,7 @@ class FakeSocket:
         self.blocking = None
         self.closed = False
         self.recv_error = None
+        self.frames = []
 
     def bind(self, address):
         self.bound = address
@@ -159,6 +161,8 @@ class FakeSocket:
     def recv(self, _size):
         if self.recv_error is not None:
             raise self.recv_error
+        if self.frames:
+            return self.frames.pop(0)
         raise BlockingIOError()
 
     def close(self):
@@ -199,6 +203,67 @@ class ControllerStartupTests(unittest.TestCase):
         self.controller = bridge.RvcBattery(
             self.glib, FakeService, socket_factory=socket_factory,
             clock=self.clock)
+
+    def feed_frame(self, source_address, dgn, payload):
+        data = bytes.fromhex(payload)
+        can_id = (bridge.CAN_EFF_FLAG | (dgn << 8) | source_address)
+        frame = struct.pack("<IB3x8s", can_id, len(data), data)
+        self.controller._sock.frames.append(frame)
+        self.assertTrue(self.controller._on_can_frame(
+            self.controller._sock.fd, self.glib.IO_IN))
+
+    def feed_aggregate(self, source_address, status_1="01780a0120013577"):
+        self.feed_frame(
+            source_address, bridge.DGN_DC_SOURCE_STATUS_1, status_1)
+        self.feed_frame(
+            source_address, bridge.DGN_DC_SOURCE_STATUS_4,
+            "0178072001709403")
+        self.feed_frame(
+            source_address, bridge.DGN_DC_SOURCE_STATUS_11,
+            "017815b004f40100")
+
+    def test_automatic_discovery_accepts_aggregate_after_address_change(self):
+        self.feed_aggregate(0x8E)
+
+        self.assertEqual(self.controller._aggregator_sa, 0x8E)
+        self.assertIsNotNone(self.controller._service)
+        self.assertEqual(self.controller._service.paths["/Connected"], 1)
+        self.assertEqual(
+            self.controller._service.paths["/Info/MaxChargeVoltage"], 14.4)
+
+    def test_automatic_discovery_ignores_gx_dc_source_rebroadcast(self):
+        self.feed_aggregate(0xA1)
+
+        self.assertIsNone(self.controller._aggregator_sa)
+        self.assertIsNone(self.controller._service)
+
+    def test_automatic_discovery_requires_bank_capacity_frame(self):
+        self.feed_frame(
+            0x8E, bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        self.feed_frame(
+            0x8E, bridge.DGN_DC_SOURCE_STATUS_4, "0178072001709403")
+
+        self.assertIsNone(self.controller._aggregator_sa)
+        self.assertIsNone(self.controller._service)
+
+    def test_automatic_discovery_follows_silent_aggregate_role(self):
+        self.feed_aggregate(0x8D)
+        self.assertEqual(self.controller._aggregator_sa, 0x8D)
+
+        self.clock.now = bridge.SOURCE_SWITCH_AFTER + 0.1
+        self.feed_aggregate(0x8E, status_1="017808010cdd3577")
+
+        self.assertEqual(self.controller._aggregator_sa, 0x8E)
+        self.assertAlmostEqual(
+            self.controller._service.paths["/Dc/0/Voltage"], 13.2)
+
+    def test_automatic_discovery_does_not_leave_a_live_aggregate(self):
+        self.feed_aggregate(0x8D)
+        self.feed_aggregate(0x8E, status_1="017808010cdd3577")
+
+        self.assertEqual(self.controller._aggregator_sa, 0x8D)
+        self.assertAlmostEqual(
+            self.controller._service.paths["/Dc/0/Voltage"], 13.3)
 
     def test_service_is_withheld_until_live_limits_are_available(self):
         self.assertIsNone(self.controller._service)

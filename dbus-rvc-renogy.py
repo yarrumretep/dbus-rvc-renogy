@@ -8,7 +8,9 @@ not create a ``com.victronenergy.battery`` service for them.
 
 This read-only CAN bridge restores the small D-Bus contract observed on
 Venus OS 3.32. It consumes the standard bank-level messages transmitted by
-the REGO aggregator at source address 0x8D:
+the REGO aggregator. The physical battery acting as aggregator can change its
+RV-C source address after a bank restart, so the bridge discovers the live
+aggregate source instead of assuming the initially observed address 0x8D:
 
     0x1FFFD  DC_SOURCE_STATUS_1   voltage and current
     0x1FFFC  DC_SOURCE_STATUS_2   temperature and state of charge
@@ -40,11 +42,22 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.3"
+BRIDGE_VERSION = "0.4.4"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
-AGGREGATOR_SA = int(
-    os.environ.get("RVC_RENOGY_SOURCE_ADDRESS", "0x8D"), 0)
+
+
+def _configured_source_address():
+    raw_value = os.environ.get("RVC_RENOGY_SOURCE_ADDRESS", "auto").strip()
+    if raw_value.lower() == "auto":
+        return None
+    value = int(raw_value, 0)
+    if value < 0 or value > 0xFF:
+        raise ValueError("RVC_RENOGY_SOURCE_ADDRESS must be auto or 0..255")
+    return value
+
+
+CONFIGURED_AGGREGATOR_SA = _configured_source_address()
 DC_SOURCE_INSTANCE = 1
 DEVICE_INSTANCE = int(os.environ.get("RVC_RENOGY_DEVICE_INSTANCE", "1"), 0)
 
@@ -71,6 +84,13 @@ LIMITS_STALE_AFTER = 15.0
 # startup can0 can be reconfigured after the service first binds to it.
 CAN_REBIND_AFTER = 10.0
 CAN_OPEN_RETRY_AFTER = 2.0
+# Renogy batteries use dynamically claimed RV-C addresses in this range. Keep
+# automatic discovery out of the 0xA0 range used by the GX's own RV-C exports.
+AUTO_SOURCE_ADDRESS_MIN = 0x80
+AUTO_SOURCE_ADDRESS_MAX = 0x8F
+# STATUS_1 is observed at 2 Hz. If a complete candidate aggregate appears and
+# the current source has been silent for this long, the aggregate role moved.
+SOURCE_SWITCH_AFTER = 3.0
 
 CAN_EFF_FLAG = 0x80000000
 CAN_EFF_MASK = 0x1FFFFFFF
@@ -297,10 +317,14 @@ class BatteryState:
 
 
 class RvcBattery:
-    def __init__(self, glib, service_class, socket_factory=None, clock=None):
+    def __init__(self, glib, service_class, socket_factory=None, clock=None,
+                 aggregator_sa=CONFIGURED_AGGREGATOR_SA):
         self._glib = glib
         self._clock = clock or time.monotonic
         self._state = BatteryState(clock=self._clock)
+        self._configured_aggregator_sa = aggregator_sa
+        self._aggregator_sa = aggregator_sa
+        self._candidate_states = {}
         self._service_class = service_class
         self._service = None
         self._socket_factory = socket_factory or socket.socket
@@ -310,6 +334,56 @@ class RvcBattery:
         self._last_can_open_attempt = None
         self._open_can()
         self._glib.timeout_add(1000, self._tick)
+
+    @staticmethod
+    def _automatic_source_candidate(source_address):
+        return (AUTO_SOURCE_ADDRESS_MIN <= source_address
+                <= AUTO_SOURCE_ADDRESS_MAX)
+
+    @staticmethod
+    def _candidate_ready(state, now):
+        # STATUS_11 capacity distinguishes the bank aggregator from charging
+        # devices that may publish a subset of the DC source status family.
+        return (state.full_capacity is not None
+                and state.full_capacity > 0
+                and state.ready_for_service(now))
+
+    def _select_aggregate_source(self, source_address, state):
+        changed = source_address != self._aggregator_sa
+        self._aggregator_sa = source_address
+        self._state = state
+        if changed:
+            print("Selected Renogy aggregate source 0x%02X"
+                  % source_address, flush=True)
+
+    def _consume_aggregate_frame(self, source_address, dgn, data):
+        if self._configured_aggregator_sa is not None:
+            if source_address != self._configured_aggregator_sa:
+                return False
+            return self._state.update(dgn, data)
+
+        if not self._automatic_source_candidate(source_address):
+            return False
+
+        state = self._candidate_states.get(source_address)
+        if state is None:
+            state = BatteryState(clock=self._clock)
+            self._candidate_states[source_address] = state
+        if not state.update(dgn, data):
+            return False
+
+        now = self._clock()
+        if source_address == self._aggregator_sa:
+            self._state = state
+        elif self._candidate_ready(state, now):
+            current_silent = (
+                self._aggregator_sa is None
+                or self._state.measurements_at is None
+                or (now - self._state.measurements_at) >= SOURCE_SWITCH_AFTER)
+            if current_silent:
+                self._select_aggregate_source(source_address, state)
+
+        return source_address == self._aggregator_sa
 
     @staticmethod
     def _create_service(service_class, initial_values=None):
@@ -416,11 +490,11 @@ class RvcBattery:
         can_id &= CAN_EFF_MASK
         source_address = can_id & 0xFF
         dgn = (can_id >> 8) & 0x1FFFF
-        if source_address != AGGREGATOR_SA or dgn not in AGGREGATE_DGNS:
+        if dgn not in AGGREGATE_DGNS:
             return True
 
         data = frame[8:8 + dlc]
-        if self._state.update(dgn, data):
+        if self._consume_aggregate_frame(source_address, dgn, data):
             self._ensure_service()
             if self._service is not None:
                 self._publish()
