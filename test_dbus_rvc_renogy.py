@@ -104,18 +104,25 @@ class BatteryStateTests(unittest.TestCase):
         values = self.state.snapshot()
 
         self.assertEqual(self.state.remaining_capacity, 1044)
-        self.assertNotIn("/Capacity", values)
+        self.assertIsNone(values["/Capacity"])
 
         self.feed(bridge.DGN_DC_SOURCE_STATUS_11, "017815b004f40100")
         self.assertEqual(self.state.snapshot()["/Capacity"], 1200)
 
     def test_measurement_timeout_disconnects_and_stops_charge(self):
         self.feed_complete_capture()
+        self.state.snapshot()
         self.clock.now = bridge.MEASUREMENTS_STALE_AFTER + 0.1
         values = self.state.snapshot()
 
         self.assertEqual(values["/Connected"], 0)
         self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
+        self.assertEqual(values["/Info/MaxChargeVoltage"], 14.4)
+        for path in (
+                "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power",
+                "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity"):
+            with self.subTest(path=path):
+                self.assertIsNone(values[path])
 
     def test_limit_timeout_stops_charge_while_measurements_remain_live(self):
         self.feed_complete_capture()
@@ -133,7 +140,20 @@ class BatteryStateTests(unittest.TestCase):
         values = self.state.snapshot()
 
         self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
-        self.assertNotIn("/Info/MaxChargeVoltage", values)
+        self.assertIsNone(values["/Info/MaxChargeVoltage"])
+
+    def test_invalid_limit_retains_only_previously_valid_charge_voltage(self):
+        self.feed_complete_capture()
+        self.assertEqual(
+            self.state.snapshot()["/Info/MaxChargeVoltage"], 14.4)
+
+        # A later invalid CVL fails charge closed without removing the path
+        # Venus uses to recognize this already-registered service as a BMS.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178070000709403")
+        values = self.state.snapshot()
+
+        self.assertEqual(values["/Info/MaxChargeVoltage"], 14.4)
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
 
     def test_out_of_range_charge_current_limit_stops_charge(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
@@ -143,7 +163,7 @@ class BatteryStateTests(unittest.TestCase):
 
         self.assertIsNone(self.state.max_charge_current)
         self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
-        self.assertNotIn("/Info/MaxChargeVoltage", values)
+        self.assertIsNone(values["/Info/MaxChargeVoltage"])
 
     def test_out_of_range_voltage_disconnects_measurements(self):
         # Voltage raw 0xFFFE means Error/Out of Range, not 3276.7 V.
@@ -154,7 +174,7 @@ class BatteryStateTests(unittest.TestCase):
         self.assertIsNone(self.state.voltage)
         self.assertEqual(values["/Connected"], 0)
         self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
-        self.assertNotIn("/Dc/0/Voltage", values)
+        self.assertIsNone(values["/Dc/0/Voltage"])
 
     def test_out_of_range_soc_is_not_published(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
@@ -163,7 +183,7 @@ class BatteryStateTests(unittest.TestCase):
         values = self.state.snapshot()
 
         self.assertIsNone(self.state.soc)
-        self.assertNotIn("/Soc", values)
+        self.assertIsNone(values["/Soc"])
 
     def test_valid_limits_are_clamped_only_at_hard_ceilings(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
@@ -406,6 +426,26 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertEqual(service.paths["/Connected"], 1)
         self.assertEqual(service.paths["/Info/MaxChargeCurrent"], 300.0)
         self.assertEqual(service.paths["/Info/MaxChargeVoltage"], 14.4)
+
+    def test_registered_service_clears_stale_measurements(self):
+        self.feed_aggregate(0x8D)
+        self.feed_frame(
+            0x8D, bridge.DGN_DC_SOURCE_STATUS_2,
+            "01783c25aef40001")
+        self.assertEqual(self.controller._service.paths["/Soc"], 87.0)
+
+        self.clock.now = bridge.MEASUREMENTS_STALE_AFTER + 0.1
+        self.controller._tick()
+
+        paths = self.controller._service.paths
+        self.assertEqual(paths["/Connected"], 0)
+        self.assertEqual(paths["/Info/MaxChargeCurrent"], 0.0)
+        self.assertEqual(paths["/Info/MaxChargeVoltage"], 14.4)
+        for path in (
+                "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power",
+                "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity"):
+            with self.subTest(path=path):
+                self.assertIsNone(paths[path])
 
     def test_can_socket_is_rebound_when_measurements_never_arrive(self):
         first_socket = self.sockets[0]

@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.7"
+BRIDGE_VERSION = "0.4.8"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -195,6 +195,7 @@ class BatteryState:
         self.charge_state = None
         self.max_charge_voltage = None
         self.max_charge_current = None
+        self.last_safe_charge_voltage = None
         self.status_6_flags = None
 
         self.measurements_at = None
@@ -289,32 +290,30 @@ class BatteryState:
         now = self._clock() if now is None else now
         connected = self.measurements_fresh(now)
         cvl, ccl = self._safe_limits(now)
+        if cvl is not None:
+            self.last_safe_charge_voltage = cvl
+
+        current = (round(self.current, 3)
+                   if connected and self.current is not None else None)
+        power = (int(round(self.voltage * self.current))
+                 if connected and self.current is not None else None)
 
         values = {
             "/Connected": 1 if connected else 0,
             "/Info/MaxChargeCurrent": ccl,
+            # Once registered, retaining the last validated CVL keeps Venus
+            # from reclassifying this service as a lost BMS. CCL=0 remains
+            # the fail-safe whenever current limits or measurements are stale.
+            "/Info/MaxChargeVoltage": (
+                cvl if cvl is not None else self.last_safe_charge_voltage),
+            "/Dc/0/Voltage": self.voltage if connected else None,
+            "/Dc/0/Current": current,
+            "/Dc/0/Power": power,
+            "/Dc/0/Temperature": self.temperature if connected else None,
+            "/Soc": self.soc if connected else None,
+            "/Soh": self.soh if connected else None,
+            "/Capacity": self.full_capacity if connected else None,
         }
-        if cvl is not None:
-            values["/Info/MaxChargeVoltage"] = cvl
-
-        if connected:
-            values["/Dc/0/Voltage"] = self.voltage
-            if self.current is not None:
-                # The encoded field has 0.001 A resolution. Rounding removes
-                # binary floating-point artifacts such as 8.099999999860302.
-                values["/Dc/0/Current"] = round(self.current, 3)
-                values["/Dc/0/Power"] = int(round(
-                    self.voltage * self.current))
-            if self.temperature is not None:
-                values["/Dc/0/Temperature"] = self.temperature
-            if self.soc is not None:
-                values["/Soc"] = self.soc
-            if self.soh is not None:
-                values["/Soh"] = self.soh
-            # The native 3.32 driver published full installed capacity here,
-            # not the remaining-capacity value from STATUS_3.
-            if self.full_capacity is not None:
-                values["/Capacity"] = self.full_capacity
 
         voltage = self.voltage if connected else None
         temperature = self.temperature if connected else None

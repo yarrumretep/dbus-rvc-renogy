@@ -78,6 +78,9 @@ the aggregator's bank-level charge limit.
 - publishes zero charge current until measurement and charge-limit streams are
   both fresh and valid;
 - publishes zero charge current if either stream becomes stale;
+- clears voltage, current, power, temperature, SOC, SOH, and capacity when the
+  measurement stream becomes stale, so the GUI and VRM do not show old data as
+  live;
 - rejects implausible charge-voltage limits and clamps configured maxima;
 - converts REGO/RV-C current to Venus OS's charging-positive convention; and
 - publishes full installed capacity from `DC_SOURCE_STATUS_11`, not remaining
@@ -86,6 +89,13 @@ the aggregator's bank-level charge limit.
 Starting the service is a live DVCC action. With battery and BMS selection set
 to `Automatic`, Venus normally makes it the active battery and active BMS
 immediately.
+
+After the service has registered, it deliberately retains the last validated
+charge-voltage limit while publishing `/Connected = 0` and a zero charge-current
+limit during a data outage. Venus uses the presence of the charge-voltage path
+to classify a service as a BMS; clearing it can trigger Lost BMS handling and
+charger error 67. Retaining only that previously validated voltage keeps the
+BMS identity stable while the zero current limit fails charging closed.
 
 ## Offline tests
 
