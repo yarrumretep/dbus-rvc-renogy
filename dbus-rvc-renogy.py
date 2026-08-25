@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.4"
+BRIDGE_VERSION = "0.4.5"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -118,17 +118,20 @@ AGGREGATE_DGNS = frozenset((
 
 def _u8(data, offset):
     value = data[offset]
-    return None if value == 0xFF else value
+    # RV-C reserves the top three values for Reserved, Error/Out of Range,
+    # and Data Not Available. None keeps every caller from interpreting any
+    # of those protocol sentinels as a measurement.
+    return None if value >= 0xFD else value
 
 
 def _u16(data, offset):
     value = struct.unpack_from("<H", data, offset)[0]
-    return None if value == 0xFFFF else value
+    return None if value >= 0xFFFD else value
 
 
 def _u32(data, offset):
     value = struct.unpack_from("<I", data, offset)[0]
-    return None if value == 0xFFFFFFFF else value
+    return None if value >= 0xFFFFFFFD else value
 
 
 def _volts(data, offset):

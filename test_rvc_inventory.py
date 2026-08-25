@@ -68,6 +68,21 @@ class CapturedBatteryDiagnosticsTests(unittest.TestCase):
         self.assertIn("high-V-limit=yes", decoded)
         self.assertIn("high-V-disconnect=disconnected", decoded)
 
+    def test_rvc_special_numeric_values_are_reported_as_unavailable(self):
+        status_1 = self.decode(0x1FE95, "1278fefffeffffff")
+        status_2 = self.decode(0x1FE94, "1278fefffefeffff")
+        status_4 = self.decode(0x1FE92, "1278fdfefffefffd")
+
+        self.assertIn("V=n/a", status_1)
+        self.assertIn("I=n/a", status_1)
+        self.assertIn("T=n/a", status_2)
+        self.assertIn("SOC=n/a", status_2)
+        self.assertIn("t_rem=n/a", status_2)
+        self.assertIn("state=n/a", status_4)
+        self.assertIn("CVL=n/a", status_4)
+        self.assertIn("CCL=n/a", status_4)
+        self.assertIn("type=n/a", status_4)
+
     def test_battery_summary_and_voltage_history(self):
         summary = self.decode(0x1FDF1, "1201010104ffffff")
         history = self.decode(0x1FDF2, "1201f0002201ffff")

@@ -21,6 +21,30 @@ class Clock:
         return self.now
 
 
+class RawValueDecoderTests(unittest.TestCase):
+    def test_u8_rejects_all_rvc_special_values(self):
+        self.assertEqual(bridge._u8(bytes([0xFC]), 0), 0xFC)
+        for value in (0xFD, 0xFE, 0xFF):
+            with self.subTest(value=value):
+                self.assertIsNone(bridge._u8(bytes([value]), 0))
+
+    def test_u16_rejects_all_rvc_special_values(self):
+        self.assertEqual(
+            bridge._u16(struct.pack("<H", 0xFFFC), 0), 0xFFFC)
+        for value in (0xFFFD, 0xFFFE, 0xFFFF):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    bridge._u16(struct.pack("<H", value), 0))
+
+    def test_u32_rejects_all_rvc_special_values(self):
+        self.assertEqual(
+            bridge._u32(struct.pack("<I", 0xFFFFFFFC), 0), 0xFFFFFFFC)
+        for value in (0xFFFFFFFD, 0xFFFFFFFE, 0xFFFFFFFF):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    bridge._u32(struct.pack("<I", value), 0))
+
+
 class BatteryStateTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
@@ -89,6 +113,36 @@ class BatteryStateTests(unittest.TestCase):
 
         self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
         self.assertNotIn("/Info/MaxChargeVoltage", values)
+
+    def test_out_of_range_charge_current_limit_stops_charge(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        # CCL raw 0xFFFE means Error/Out of Range, not 1676.7 A.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178072001feff03")
+        values = self.state.snapshot()
+
+        self.assertIsNone(self.state.max_charge_current)
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
+        self.assertNotIn("/Info/MaxChargeVoltage", values)
+
+    def test_out_of_range_voltage_disconnects_measurements(self):
+        # Voltage raw 0xFFFE means Error/Out of Range, not 3276.7 V.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "0178feff20013577")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178072001709403")
+        values = self.state.snapshot()
+
+        self.assertIsNone(self.state.voltage)
+        self.assertEqual(values["/Connected"], 0)
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
+        self.assertNotIn("/Dc/0/Voltage", values)
+
+    def test_out_of_range_soc_is_not_published(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        # SOC raw 0xFE means Error/Out of Range, not 127 percent.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_2, "01783c25fef40001")
+        values = self.state.snapshot()
+
+        self.assertIsNone(self.state.soc)
+        self.assertNotIn("/Soc", values)
 
     def test_valid_limits_are_clamped_only_at_hard_ceilings(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")

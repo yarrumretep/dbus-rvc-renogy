@@ -46,21 +46,26 @@ CAN_EFF_MASK = 0x1FFFFFFF
 # PDU1 DGNs: the low byte is the destination address, not part of the DGN.
 PDU1_BASES = {0x0EA00: "REQUEST", 0x0E800: "ACK", 0x0EE00: "ADDRESS_CLAIM"}
 
-NA8, NA16, NA32 = 0xFF, 0xFFFF, 0xFFFFFFFF
+SPECIAL8_MIN = 0xFD
+SPECIAL16_MIN = 0xFFFD
+SPECIAL32_MIN = 0xFFFFFFFD
+DATA_NOT_AVAILABLE8 = 0xFF
 
 
 def u8(d, i):
-    return None if d[i] == NA8 else d[i]
+    # RV-C reserves the top three values for Reserved, Error/Out of Range,
+    # and Data Not Available. Diagnostics should never display them as data.
+    return None if d[i] >= SPECIAL8_MIN else d[i]
 
 
 def u16(d, i):
     v = struct.unpack_from("<H", d, i)[0]
-    return None if v == NA16 else v
+    return None if v >= SPECIAL16_MIN else v
 
 
 def u32(d, i):
     v = struct.unpack_from("<I", d, i)[0]
-    return None if v == NA32 else v
+    return None if v >= SPECIAL32_MIN else v
 
 
 def volts(d, i):
@@ -169,13 +174,18 @@ def dec_status_3(d):
 
 def dec_status_4(d):
     """DC_SOURCE_STATUS_4 / BATTERY_STATUS_4 — the charge limits DVCC needs."""
-    return "  ".join([
-        fmt("inst", d[0]),
-        "state=%s" % {
+    charge_state = u8(d, 2)
+    if charge_state is None:
+        state = "n/a"
+    else:
+        state = {
             0: "undefined", 1: "do-not-charge", 2: "bulk",
             3: "absorption", 4: "overcharge", 5: "equalize",
             6: "float", 7: "constant-V/I",
-        }.get(d[2], str(d[2])),
+        }.get(charge_state, str(charge_state))
+    return "  ".join([
+        fmt("inst", d[0]),
+        "state=%s" % state,
         fmt("CVL", volts(d, 3), " V"),
         fmt("CCL", amps_offset(d, 5), " A", 1),
         fmt("type", u8(d, 7)),
@@ -299,7 +309,7 @@ def dec_dm_rv(d):
         {0: "off", 1: "on", 2: "error", 3: "n/a"}[on_off],
         {0: "standby", 1: "active", 2: "error", 3: "n/a"}[activity],
         LAMP_STATES[yellow], LAMP_STATES[red])
-    quiet = all(b == NA8 for b in d[2:6])
+    quiet = all(b == DATA_NOT_AVAILABLE8 for b in d[2:6])
     if quiet:
         return "%s  DSA=%d (%s)  no active fault" % (
             status, dsa, DSA_NAMES.get(dsa, "?"))
@@ -501,7 +511,8 @@ class Node:
             e["t0"] = t
         if dgn in (0x1FECA, 0x0FECA) and len(data) >= 6:
             self.dsa = data[1]
-            self.fault = not all(b == NA8 for b in data[2:6])
+            self.fault = not all(
+                b == DATA_NOT_AVAILABLE8 for b in data[2:6])
 
     def rate(self, dgn):
         e = self.dgns[dgn]
