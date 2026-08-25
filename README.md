@@ -88,7 +88,13 @@ the aggregator's bank-level charge limit.
   temperature thresholds;
 - converts REGO/RV-C current to Venus OS's charging-positive convention; and
 - publishes full installed capacity from `DC_SOURCE_STATUS_11`, not remaining
-  capacity from `DC_SOURCE_STATUS_3`.
+  capacity from `DC_SOURCE_STATUS_3`, under both `/Capacity` and Venus's
+  preferred `/InstalledCapacity` path;
+- publishes STATUS_2 time remaining in seconds as `/TimeToGo`; and
+- publishes `/Info/MaxDischargeCurrent = 0` when STATUS_6 explicitly tells
+  loads to stop for low voltage/low SOC, or STATUS_11 reports the discharge
+  contactor disconnected or in error. It otherwise leaves DCL unavailable
+  rather than inventing a normal discharge-current ceiling.
 
 Starting the service is a live DVCC action. With battery and BMS selection set
 to `Automatic`, Venus normally makes it the active battery and active BMS

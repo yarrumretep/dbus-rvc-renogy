@@ -112,10 +112,13 @@ class BatteryStateTests(unittest.TestCase):
         self.assertEqual(values["/Dc/0/Power"], 500)
         self.assertAlmostEqual(values["/Dc/0/Temperature"], 24.875)
         self.assertEqual(values["/Soc"], 87.0)
+        self.assertEqual(values["/TimeToGo"], 14640)
         self.assertEqual(values["/Soh"], 100.0)
         self.assertEqual(values["/Info/MaxChargeVoltage"], 14.4)
         self.assertEqual(values["/Info/MaxChargeCurrent"], 300.0)
         self.assertEqual(values["/Capacity"], 1200)
+        self.assertEqual(values["/InstalledCapacity"], 1200)
+        self.assertIsNone(values["/Info/MaxDischargeCurrent"])
 
     def test_remaining_capacity_is_not_published_as_capacity(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
@@ -139,9 +142,11 @@ class BatteryStateTests(unittest.TestCase):
         self.assertEqual(values["/Info/MaxChargeVoltage"], 14.4)
         for path in (
                 "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power",
-                "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity"):
+                "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity",
+                "/TimeToGo"):
             with self.subTest(path=path):
                 self.assertIsNone(values[path])
+        self.assertEqual(values["/InstalledCapacity"], 1200)
 
     def test_limit_timeout_stops_charge_while_measurements_remain_live(self):
         self.feed_complete_capture()
@@ -246,6 +251,26 @@ class BatteryStateTests(unittest.TestCase):
         self.clock.now = bridge.STATUS_STALE_AFTER + 0.1
 
         self.assertEqual(self.state.snapshot()["/Alarms/HighVoltage"], 0)
+
+    def test_low_voltage_or_soc_status_requests_zero_discharge_current(self):
+        for payload in ("0178100000ffffff", "0178000100ffffff"):
+            with self.subTest(payload=payload):
+                self.feed(bridge.DGN_DC_SOURCE_STATUS_6, payload)
+                self.assertEqual(
+                    self.state.snapshot()["/Info/MaxDischargeCurrent"], 0.0)
+
+    def test_open_discharge_contactor_requests_zero_discharge_current(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_11, "017814b004f40100")
+
+        self.assertEqual(
+            self.state.snapshot()["/Info/MaxDischargeCurrent"], 0.0)
+
+    def test_clear_load_status_does_not_invent_discharge_ceiling(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_6, "0178000000ffffff")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_11, "017815b004f40100")
+
+        self.assertIsNone(
+            self.state.snapshot()["/Info/MaxDischargeCurrent"])
 
     def test_valid_limits_are_clamped_only_at_hard_ceilings(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
@@ -519,9 +544,11 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertEqual(paths["/Info/MaxChargeVoltage"], 14.4)
         for path in (
                 "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power",
-                "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity"):
+                "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity",
+                "/TimeToGo"):
             with self.subTest(path=path):
                 self.assertIsNone(paths[path])
+        self.assertEqual(paths["/InstalledCapacity"], 1200)
 
     def test_can_socket_is_rebound_when_measurements_never_arrive(self):
         first_socket = self.sockets[0]

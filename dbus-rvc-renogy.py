@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.14"
+BRIDGE_VERSION = "0.4.15"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -246,6 +246,10 @@ def _temperature(data, offset):
     return None if value is None else (value * 0.03125) - 273.0
 
 
+def _pair(data, byte_index, shift):
+    return (data[byte_index] >> shift) & 0x03
+
+
 class BatteryState:
     """Pure decoder and freshness policy, kept independent of D-Bus for tests."""
 
@@ -257,6 +261,8 @@ class BatteryState:
         self.source_priority = None
         self.temperature = None
         self.soc = None
+        self.time_to_go = None
+        self.time_remaining_interpretation = None
         self.soh = None
         self.remaining_capacity = None
         self.full_capacity = None
@@ -266,6 +272,7 @@ class BatteryState:
         self.max_charge_current = None
         self.last_safe_charge_voltage = None
         self.status_6_flags = None
+        self.discharge_contactor_status = None
 
         self.measurements_at = None
         self.limits_at = None
@@ -296,6 +303,10 @@ class BatteryState:
         elif dgn == DGN_DC_SOURCE_STATUS_2:
             self.temperature = _temperature(data, 2)
             self.soc = _percentage(data, 4)
+            time_remaining = _u16(data, 5)
+            self.time_to_go = (
+                None if time_remaining is None else time_remaining * 60)
+            self.time_remaining_interpretation = _pair(data, 7, 0)
 
         elif dgn == DGN_DC_SOURCE_STATUS_3:
             self.soh = _percentage(data, 2)
@@ -312,6 +323,7 @@ class BatteryState:
             self.status_6_at = now
 
         elif dgn == DGN_DC_SOURCE_STATUS_11:
+            self.discharge_contactor_status = _pair(data, 2, 0)
             self.full_capacity = _u16(data, 3)
 
         return True
@@ -373,6 +385,23 @@ class BatteryState:
             in fields.items()
         }
 
+    def _discharge_stop_requested(self):
+        # STATUS_11: 0=disconnected, 1=connected, 2=error, 3=not available.
+        if self.discharge_contactor_status in (0, 2):
+            return True
+        if self.status_6_flags is None:
+            return False
+
+        # Low-voltage and low-SOC limit/disconnect signals explicitly tell
+        # loads to terminate. Treat a field error conservatively; ignore NA.
+        load_statuses = (
+            _pair(self.status_6_flags, 0, 4),
+            _pair(self.status_6_flags, 0, 6),
+            _pair(self.status_6_flags, 1, 0),
+            _pair(self.status_6_flags, 1, 2),
+        )
+        return any(status in (1, 2) for status in load_statuses)
+
     def _safe_limits(self, now):
         if not self.measurements_fresh(now) or not self.limits_fresh(now):
             return None, 0.0
@@ -423,8 +452,12 @@ class BatteryState:
             "/Dc/0/Power": power,
             "/Dc/0/Temperature": self.temperature if connected else None,
             "/Soc": self.soc if connected else None,
+            "/TimeToGo": self.time_to_go if connected else None,
             "/Soh": self.soh if connected else None,
             "/Capacity": self.full_capacity if connected else None,
+            "/InstalledCapacity": self.full_capacity,
+            "/Info/MaxDischargeCurrent": (
+                0.0 if self._discharge_stop_requested() else None),
         }
 
         values.update({
@@ -545,7 +578,8 @@ class RvcBattery:
         for path in (
                 "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power",
                 "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity",
-                "/TimeToGo", "/Info/MaxChargeVoltage"):
+                "/InstalledCapacity", "/TimeToGo",
+                "/Info/MaxChargeVoltage", "/Info/MaxDischargeCurrent"):
             service.add_path(path, initial(path))
 
         service.add_path(
