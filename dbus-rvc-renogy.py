@@ -45,7 +45,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.17"
+BRIDGE_VERSION = "0.4.18"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -460,7 +460,8 @@ class BatteryState:
         """
         now = self._clock() if now is None else now
         cvl, _ccl = self._safe_limits(now)
-        return cvl is not None
+        return (self.source_priority == RENOGY_AGGREGATE_PRIORITY
+                and cvl is not None)
 
     def snapshot(self, now=None):
         """Return the D-Bus values that should be published at this instant."""
@@ -513,6 +514,8 @@ class RvcBattery:
         self._configured_aggregator_sa = aggregator_sa
         self._aggregator_sa = aggregator_sa
         self._candidate_states = {}
+        self._fixed_candidate_state = BatteryState(clock=self._clock)
+        self._fixed_source_validated = False
         self._service_class = service_class
         self._device_instance = device_instance
         self._service = None
@@ -555,19 +558,47 @@ class RvcBattery:
         if self._configured_aggregator_sa is not None:
             if source_address != self._configured_aggregator_sa:
                 return False
-            if not self._state.update(dgn, data):
+
+            # A configured address chooses where to listen, not what to trust.
+            # STATUS_1 carries the identity field. Keep all other frames out
+            # of active state until that source proves it is priority 120.
+            if dgn == DGN_DC_SOURCE_STATUS_1:
+                if len(data) < 8 or data[0] != DC_SOURCE_INSTANCE:
+                    return False
+                source_priority = _u8(data, 1)
+                if source_priority != RENOGY_AGGREGATE_PRIORITY:
+                    self._fixed_source_validated = False
+                    self._fixed_candidate_state = BatteryState(
+                        clock=self._clock)
+                    if (source_priority is not None
+                            and not self._fixed_priority_warning_printed):
+                        print(
+                            "Ignoring configured source 0x%02X: DC source "
+                            "priority %d is not Renogy aggregate priority %d"
+                            % (source_address, source_priority,
+                               RENOGY_AGGREGATE_PRIORITY),
+                            flush=True)
+                        self._fixed_priority_warning_printed = True
+                    return False
+
+                if not self._fixed_source_validated:
+                    self._fixed_candidate_state = BatteryState(
+                        clock=self._clock)
+                    self._fixed_source_validated = True
+                self._fixed_priority_warning_printed = False
+            elif not self._fixed_source_validated:
                 return False
-            if self._state.source_priority != RENOGY_AGGREGATE_PRIORITY:
-                if (self._state.source_priority is not None
-                        and not self._fixed_priority_warning_printed):
-                    print(
-                        "Ignoring configured source 0x%02X: DC source "
-                        "priority %d is not Renogy aggregate priority %d"
-                        % (source_address, self._state.source_priority,
-                           RENOGY_AGGREGATE_PRIORITY),
-                        flush=True)
-                    self._fixed_priority_warning_printed = True
+
+            state = self._fixed_candidate_state
+            if not state.update(dgn, data):
                 return False
+
+            # Do not replace a live state with a half-populated recovery
+            # candidate; wait until measurements and limits are both valid.
+            if self._state is not state:
+                if not state.ready_for_service(self._clock()):
+                    return False
+                self._state = state
             return True
 
         # 254 is the J1939 null address and 255 is the global address; neither

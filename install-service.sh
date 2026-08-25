@@ -51,7 +51,7 @@ install_boot_hook() {
                 if ($0 !~ /^[[:space:]]*($|#)/) last_command = count
             }
             END {
-                before_final_exit = last_command > 0 && lines[last_command] ~ /^exit[[:space:]]+0[[:space:]]*$/
+                before_final_exit = last_command > 0 && lines[last_command] ~ /^[[:space:]]*exit[[:space:]]+0[[:space:]]*$/
                 for (i = 1; i <= count; i++) {
                     if (before_final_exit && i == last_command) {
                         print hook_begin

@@ -193,7 +193,9 @@ fixed address such as `0x8D` is suitable only as a temporary diagnostic
 override. Fixed addresses may use `0x8D`, bare hexadecimal `8D`, or decimal
 syntax. The selected source must still identify itself as priority 120, which
 prevents accidentally feeding the bridge from the GX's priority-119 RV-C
-rebroadcast.
+rebroadcast. Fixed-address traffic remains quarantined until a priority-120
+`DC_SOURCE_STATUS_1` establishes its identity; a conflicting priority resets
+that candidate without modifying the active battery state.
 
 With `RVC_RENOGY_DEVICE_INSTANCE=auto`, the default, Venus stores the allocation
 at `/Settings/Devices/dbus_rvc_renogy_<interface>/ClassAndVrmInstance`. It

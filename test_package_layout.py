@@ -163,6 +163,48 @@ class PackageLayoutTests(unittest.TestCase):
                     service_root / "dbus-rvc-renogy"),
                 svc_log.read_text(encoding="utf-8").splitlines())
 
+    def test_installer_places_hook_before_indented_final_exit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            package = temp / "data" / "dbus-rvc-renogy"
+            service_root = temp / "service"
+            log_root = temp / "log"
+            rc_local = temp / "data" / "rc.local"
+            fake_bin = temp / "bin"
+
+            package.mkdir(parents=True)
+            service_root.mkdir()
+            log_root.mkdir()
+            fake_bin.mkdir()
+            shutil.copy2(SCRIPT, package / SCRIPT.name)
+            shutil.copy2(ROOT / "install-service.sh", package)
+            shutil.copytree(ROOT / "services", package / "services")
+            rc_local.write_text(
+                "#!/bin/sh\n"
+                "    exit 0\n",
+                encoding="utf-8")
+
+            fake_svc = fake_bin / "svc"
+            fake_svc.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_svc.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update({
+                "PATH": "%s:%s" % (fake_bin, env["PATH"]),
+                "RVC_RENOGY_PACKAGE_DIR": str(package),
+                "RVC_RENOGY_SERVICE_ROOT": str(service_root),
+                "RVC_RENOGY_LOG_ROOT": str(log_root),
+                "RVC_RENOGY_RC_LOCAL": str(rc_local),
+            })
+            subprocess.run(
+                ["sh", str(ROOT / "install-service.sh")],
+                check=True, env=env, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+
+            contents = rc_local.read_text(encoding="utf-8")
+            hook = "%s/install-service.sh --boot" % package
+            self.assertLess(contents.index(hook), contents.index("    exit 0"))
+
 
 if __name__ == "__main__":
     unittest.main()

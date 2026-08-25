@@ -316,6 +316,12 @@ class BatteryStateTests(unittest.TestCase):
         self.clock.now = bridge.LIMITS_STALE_AFTER + 0.1
         self.assertFalse(self.state.ready_for_service())
 
+    def test_service_readiness_requires_renogy_aggregate_priority(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01770a0120013577")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178072001709403")
+
+        self.assertFalse(self.state.ready_for_service())
+
 
 class FakeService:
     def __init__(self, name, register=False):
@@ -496,7 +502,45 @@ class ControllerStartupTests(unittest.TestCase):
 
         self.feed_aggregate(0xA1, status_1="01770a0120013577")
 
+        for second in range(1, 4):
+            self.clock.now = float(second)
+            self.controller._tick()
+
         self.assertIsNone(self.controller._service)
+
+    def test_rejected_fixed_source_cannot_mutate_live_service(self):
+        self.controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=lambda *args: FakeSocket(),
+            clock=self.clock, aggregator_sa=0x8D)
+        self.feed_aggregate(0x8D)
+        self.assertAlmostEqual(
+            self.controller._service.paths["/Dc/0/Voltage"], 13.3)
+
+        # Same configured SA, but the priority identifies a GX rebroadcast.
+        self.feed_aggregate(0x8D, status_1="017708010cdd3577")
+        self.clock.now = 1.0
+        self.controller._tick()
+
+        self.assertEqual(
+            self.controller._state.source_priority,
+            bridge.RENOGY_AGGREGATE_PRIORITY)
+        self.assertAlmostEqual(
+            self.controller._service.paths["/Dc/0/Voltage"], 13.3)
+
+    def test_fixed_source_recovers_after_wrong_priority_is_rejected(self):
+        self.controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=lambda *args: FakeSocket(),
+            clock=self.clock, aggregator_sa=0x8D)
+
+        self.feed_aggregate(0x8D, status_1="01770a0120013577")
+        self.clock.now = 1.0
+        self.controller._tick()
+        self.assertIsNone(self.controller._service)
+
+        self.feed_aggregate(0x8D)
+
+        self.assertIsNotNone(self.controller._service)
+        self.assertEqual(self.controller._service.paths["/Connected"], 1)
 
     def test_automatic_discovery_requires_bank_capacity_frame(self):
         self.feed_frame(
