@@ -178,8 +178,17 @@ the ampere limit.
 ## Persistent installation on Venus OS
 
 The persistent package lives under `/data`, which survives ordinary reboots
-and Venus OS firmware updates. The active runit link lives under `/service`
-and may need to be recreated after a firmware update.
+and Venus OS firmware updates. Venus rebuilds `/service` as a runtime overlay
+on every boot, so a link created there manually does not persist. The installer
+adds a marked command to the supported late-boot hook `/data/rc.local`; that
+command recreates the runit link after `/service` is ready. Existing commands
+in `rc.local` are preserved.
+
+Ensure **Settings → General → Modification checks → All modifications enabled**
+is enabled. Venus OS disables the local boot hooks when modifications are
+disabled. See Victron's
+[root-access documentation](https://www.victronenergy.com/live/ccgx%3Aroot_access)
+for the boot-hook and `/service` overlay behavior.
 
 Stop the foreground bridge with `Ctrl-C`. From a workstation clone, run the
 tests and copy a clean archive of the tracked files. This does not require
@@ -207,7 +216,19 @@ tai64nlocal < /var/log/dbus-rvc-renogy/current | tail -n 50
 ```
 
 Running `install-service.sh` again after copying a newer version restarts the
-service so the updated Python code is loaded.
+service so the updated Python code is loaded. Running it repeatedly does not
+duplicate the boot hook.
+
+The resulting section in `/data/rc.local` is:
+
+```sh
+# BEGIN dbus-rvc-renogy
+/data/dbus-rvc-renogy/install-service.sh --boot
+# END dbus-rvc-renogy
+```
+
+Other commands already present in `rc.local` remain unchanged. If the file has
+an `exit 0` line, the installer places its block before it.
 
 Confirm that the installed process reports the expected version:
 
@@ -216,20 +237,26 @@ dbus -y com.victronenergy.battery.rvc_renogy_can0 \
     /Mgmt/ProcessVersion GetValue
 ```
 
-To uninstall, remove only the supervised-service link and leave the package
-files under `/data` for recovery:
+To uninstall, remove the supervised-service link and this package's marked
+boot block while leaving other `rc.local` commands and the package files under
+`/data` intact:
 
 ```sh
 /data/dbus-rvc-renogy/uninstall-service.sh
 ```
 
-After a Venus OS firmware update, check the service and recreate its runit link
-if necessary:
+After installation, reboot once and verify that the stock Venus boot hook
+restored the service without manual intervention:
 
 ```sh
-svstat /service/dbus-rvc-renogy 2>/dev/null ||
-    /data/dbus-rvc-renogy/install-service.sh
+reboot
+# After the GX device is reachable again:
+svstat /service/dbus-rvc-renogy
+dbus -y com.victronenergy.battery.rvc_renogy_can0 \
+    /Mgmt/ProcessVersion GetValue
 ```
+
+The same hook recreates the service following a Venus OS firmware update.
 
 ## License
 
