@@ -75,9 +75,9 @@ the aggregator's bank-level charge limit.
 - discovers the priority-120 Renogy aggregate publisher across the valid RV-C
   address space and follows an aggregate-role change after the previous source
   becomes silent;
-- publishes zero charge current until measurement and charge-limit streams are
-  both fresh and valid;
-- publishes zero charge current if either stream becomes stale;
+- publishes a zero BMS charge-current limit until measurement and charge-limit
+  streams are both fresh and valid;
+- publishes that zero limit if either stream becomes stale;
 - clears voltage, current, power, temperature, SOC, SOH, and capacity when the
   measurement stream becomes stale, so the GUI and VRM do not show old data as
   live;
@@ -95,7 +95,13 @@ charge-voltage limit while publishing `/Connected = 0` and a zero charge-current
 limit during a data outage. Venus uses the presence of the charge-voltage path
 to classify a service as a BMS; clearing it can trigger Lost BMS handling and
 charger error 67. Retaining only that previously validated voltage keeps the
-BMS identity stable while the zero current limit fails charging closed.
+BMS identity stable while the zero current limit prevents net battery charge.
+
+A zero BMS charge-current limit is not a hardware "all chargers off" command in
+Venus OS. Under DVCC's default battery behavior, solar charging is normally
+limited to `0 A`, but an MPPT may still supply enough current to cover an active
+inverter's DC load. The intended fail-safe is therefore no net charging current
+into the battery, not guaranteed electrical isolation of every charger.
 
 ## Offline tests
 
