@@ -25,6 +25,7 @@ class PackageLayoutTests(unittest.TestCase):
 
     def test_entry_points_are_executable(self):
         paths = (
+            ROOT / "deploy.sh",
             ROOT / "install-service.sh",
             ROOT / "uninstall-service.sh",
             ROOT / "rvc-inventory.py",
@@ -37,6 +38,7 @@ class PackageLayoutTests(unittest.TestCase):
 
     def test_shell_scripts_parse(self):
         scripts = (
+            ("sh", ROOT / "deploy.sh"),
             ("sh", ROOT / "install-service.sh"),
             ("sh", ROOT / "uninstall-service.sh"),
             ("sh", ROOT / "services/dbus-rvc-renogy/run"),

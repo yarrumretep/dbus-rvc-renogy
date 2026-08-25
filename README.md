@@ -238,33 +238,30 @@ disabled. See Victron's
 for the boot-hook and `/service` overlay behavior.
 
 Stop the foreground bridge with `Ctrl-C`. From a workstation clone, run the
-tests and copy a clean archive of the tracked files. This does not require
-`git` on the GX device and does not copy repository history:
+tests, then deploy and verify the current checkout with one command:
 
 ```sh
 cd dbus-rvc-renogy
 git pull --ff-only
 python3 -m unittest -v test_dbus_rvc_renogy.py test_rvc_inventory.py test_package_layout.py
-git archive --format=tar HEAD |
-    ssh root@venus.local \
-    'mkdir -p /data/dbus-rvc-renogy &&
-     tar -xf - -C /data/dbus-rvc-renogy'
+./deploy.sh root@venus.local
 ```
 
-Install and start the supervised service:
+The deployment uses `rsync` over SSH, preserves the remote `config`, runs the
+installer to restart the supervised service, and waits until D-Bus reports the
+version from the local `version` file. It does not copy Git history or delete
+operator-created files on the GX device.
+
+If a previous diagnostic session pinned `RVC_RENOGY_SOURCE_ADDRESS`, return it
+to automatic discovery during deployment:
 
 ```sh
-ssh root@venus.local
-chmod 755 /data/dbus-rvc-renogy/install-service.sh \
-    /data/dbus-rvc-renogy/uninstall-service.sh
-/data/dbus-rvc-renogy/install-service.sh
-svstat /service/dbus-rvc-renogy
-tai64nlocal < /var/log/dbus-rvc-renogy/current | tail -n 50
+./deploy.sh --auto-source root@venus.local
 ```
 
-Running `install-service.sh` again after copying a newer version restarts the
-service so the updated Python code is loaded. Running it repeatedly does not
-duplicate the boot hook.
+The target defaults to `root@venus.local` and can instead be supplied through
+`RVC_RENOGY_TARGET`. Both the workstation and GX device must provide `rsync`
+and `ssh`.
 
 The resulting section in `/data/rc.local` is:
 
