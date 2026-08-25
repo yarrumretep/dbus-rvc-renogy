@@ -31,6 +31,9 @@ else
     ln -s "$SERVICE_DIR" "$ACTIVE_SERVICE"
 fi
 
+# A down/up cycle also reloads an updated bridge script when the service was
+# already installed and running.
+svc -d "$ACTIVE_SERVICE" 2>/dev/null || true
 svc -u "$ACTIVE_SERVICE" 2>/dev/null || true
 echo "Installed $ACTIVE_SERVICE -> $SERVICE_DIR"
 echo "Rollback: $PACKAGE_DIR/uninstall-service.sh"

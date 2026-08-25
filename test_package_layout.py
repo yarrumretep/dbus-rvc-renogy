@@ -23,7 +23,6 @@ class PackageLayoutTests(unittest.TestCase):
 
     def test_entry_points_are_executable(self):
         paths = (
-            ROOT / "setup",
             ROOT / "install-service.sh",
             ROOT / "uninstall-service.sh",
             ROOT / "services/dbus-rvc-renogy/run",
@@ -35,7 +34,6 @@ class PackageLayoutTests(unittest.TestCase):
 
     def test_shell_scripts_parse(self):
         scripts = (
-            ("bash", ROOT / "setup"),
             ("sh", ROOT / "install-service.sh"),
             ("sh", ROOT / "uninstall-service.sh"),
             ("sh", ROOT / "services/dbus-rvc-renogy/run"),
@@ -53,10 +51,15 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn(
             "/data/dbus-rvc-renogy/dbus-rvc-renogy.py", run_script)
 
-    def test_setuphelper_service_name_matches_standalone_service(self):
+    def test_service_name_matches_installer(self):
         self.assertTrue((ROOT / "services/dbus-rvc-renogy").is_dir())
         installer = (ROOT / "install-service.sh").read_text(encoding="utf-8")
         self.assertIn("/service/dbus-rvc-renogy", installer)
+
+    def test_installer_restarts_an_existing_service(self):
+        installer = (ROOT / "install-service.sh").read_text(encoding="utf-8")
+        self.assertIn('svc -d "$ACTIVE_SERVICE"', installer)
+        self.assertIn('svc -u "$ACTIVE_SERVICE"', installer)
 
 
 if __name__ == "__main__":

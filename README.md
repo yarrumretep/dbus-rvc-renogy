@@ -175,21 +175,27 @@ approximately the BMS-requested voltage for the charge-voltage paths, and `0`
 for both DVCC alarms. `/Control/MaxChargeCurrent` is a control-active flag, not
 the ampere limit.
 
-## Persistent service
+## Persistent installation on Venus OS
 
-Stop the foreground bridge with `Ctrl-C`. From the workstation, copy the
-service package:
+The persistent package lives under `/data`, which survives ordinary reboots
+and Venus OS firmware updates. The active runit link lives under `/service`
+and may need to be recreated after a firmware update.
+
+Stop the foreground bridge with `Ctrl-C`. From a workstation clone, run the
+tests and copy a clean archive of the tracked files. This does not require
+`git` on the GX device and does not copy repository history:
 
 ```sh
 cd dbus-rvc-renogy
-scp dbus-rvc-renogy.py config.example install-service.sh \
-    uninstall-service.sh version root@venus.local:/data/dbus-rvc-renogy/
-scp -r services root@venus.local:/data/dbus-rvc-renogy/
+git pull --ff-only
+python3 -m unittest -v test_dbus_rvc_renogy.py test_package_layout.py
+git archive --format=tar HEAD |
+    ssh root@venus.local \
+    'mkdir -p /data/dbus-rvc-renogy &&
+     tar -xf - -C /data/dbus-rvc-renogy'
 ```
 
-### Standalone runit installation
-
-This survives ordinary reboots on the installed Venus OS version:
+Install and start the supervised service:
 
 ```sh
 ssh root@venus.local
@@ -200,33 +206,30 @@ svstat /service/dbus-rvc-renogy
 tai64nlocal < /var/log/dbus-rvc-renogy/current | tail -n 50
 ```
 
-Rollback removes only the supervised-service link and leaves the package files
-under `/data`:
+Running `install-service.sh` again after copying a newer version restarts the
+service so the updated Python code is loaded.
+
+Confirm that the installed process reports the expected version:
+
+```sh
+dbus -y com.victronenergy.battery.rvc_renogy_can0 \
+    /Mgmt/ProcessVersion GetValue
+```
+
+To uninstall, remove only the supervised-service link and leave the package
+files under `/data` for recovery:
 
 ```sh
 /data/dbus-rvc-renogy/uninstall-service.sh
 ```
 
-A Venus OS firmware update may remove the standalone `/service` link. Re-run
-`install-service.sh` after an update.
-
-### SetupHelper installation
-
-If SetupHelper v6 or newer is installed, it can restore the service after
-firmware updates. Copy the additional metadata and run the package setup:
+After a Venus OS firmware update, check the service and recreate its runit link
+if necessary:
 
 ```sh
-# Workstation
-scp setup GUI_V1_NOT_REQUIRED gitHubInfo \
-    root@venus.local:/data/dbus-rvc-renogy/
-
-# GX device
-chmod 755 /data/dbus-rvc-renogy/setup
-/data/dbus-rvc-renogy/setup
+svstat /service/dbus-rvc-renogy 2>/dev/null ||
+    /data/dbus-rvc-renogy/install-service.sh
 ```
-
-Use the SetupHelper prompt or PackageManager UI to uninstall when this route
-was used. Do not also run the standalone installer for the same service.
 
 ## License
 

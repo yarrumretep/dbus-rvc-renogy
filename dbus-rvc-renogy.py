@@ -40,7 +40,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.0"
+BRIDGE_VERSION = "0.4.1"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 AGGREGATOR_SA = int(
