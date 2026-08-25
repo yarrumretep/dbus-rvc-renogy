@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.5"
+BRIDGE_VERSION = "0.4.6"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -84,10 +84,10 @@ LIMITS_STALE_AFTER = 15.0
 # startup can0 can be reconfigured after the service first binds to it.
 CAN_REBIND_AFTER = 10.0
 CAN_OPEN_RETRY_AFTER = 2.0
-# Renogy batteries use dynamically claimed RV-C addresses in this range. Keep
-# automatic discovery out of the 0xA0 range used by the GX's own RV-C exports.
-AUTO_SOURCE_ADDRESS_MIN = 0x80
-AUTO_SOURCE_ADDRESS_MAX = 0x8F
+# The observed REGO bank aggregate identifies itself as the Battery SOC source.
+# Victron's RV-C export uses priority 119, so this distinguishes the physical
+# bank without relying on either device retaining a particular CAN address.
+RENOGY_AGGREGATE_PRIORITY = 120
 # STATUS_1 is observed at 2 Hz. If a complete candidate aggregate appears and
 # the current source has been silent for this long, the aggregate role moved.
 SOURCE_SWITCH_AFTER = 3.0
@@ -167,6 +167,7 @@ class BatteryState:
 
         self.voltage = None
         self.current = None
+        self.source_priority = None
         self.temperature = None
         self.soc = None
         self.soh = None
@@ -195,6 +196,7 @@ class BatteryState:
         now = self._clock()
 
         if dgn == DGN_DC_SOURCE_STATUS_1:
+            self.source_priority = _u8(data, 1)
             self.voltage = _volts(data, 2)
             rvc_current = _measured_amps(data, 4)
             # The REGO/RV-C capture is negative while charging; Venus is
@@ -339,15 +341,13 @@ class RvcBattery:
         self._glib.timeout_add(1000, self._tick)
 
     @staticmethod
-    def _automatic_source_candidate(source_address):
-        return (AUTO_SOURCE_ADDRESS_MIN <= source_address
-                <= AUTO_SOURCE_ADDRESS_MAX)
-
-    @staticmethod
     def _candidate_ready(state, now):
         # STATUS_11 capacity distinguishes the bank aggregator from charging
         # devices that may publish a subset of the DC source status family.
-        return (state.full_capacity is not None
+        # Priority 120 identifies the Battery SOC source and excludes the GX's
+        # priority-119 RV-C rebroadcast without assuming fixed CAN addresses.
+        return (state.source_priority == RENOGY_AGGREGATE_PRIORITY
+                and state.full_capacity is not None
                 and state.full_capacity > 0
                 and state.ready_for_service(now))
 
@@ -365,7 +365,9 @@ class RvcBattery:
                 return False
             return self._state.update(dgn, data)
 
-        if not self._automatic_source_candidate(source_address):
+        # 254 is the J1939 null address and 255 is the global address; neither
+        # can identify a claimed source node.
+        if source_address >= 0xFE:
             return False
 
         state = self._candidate_states.get(source_address)

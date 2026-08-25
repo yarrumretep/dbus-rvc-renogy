@@ -285,8 +285,26 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertEqual(
             self.controller._service.paths["/Info/MaxChargeVoltage"], 14.4)
 
+    def test_automatic_discovery_accepts_address_above_observed_window(self):
+        self.feed_aggregate(0x90)
+
+        self.assertEqual(self.controller._aggregator_sa, 0x90)
+        self.assertIsNotNone(self.controller._service)
+
+    def test_automatic_discovery_accepts_address_below_observed_window(self):
+        self.feed_aggregate(0x7F)
+
+        self.assertEqual(self.controller._aggregator_sa, 0x7F)
+        self.assertIsNotNone(self.controller._service)
+
     def test_automatic_discovery_ignores_gx_dc_source_rebroadcast(self):
-        self.feed_aggregate(0xA1)
+        self.feed_aggregate(0xA1, status_1="01770a0120013577")
+
+        self.assertIsNone(self.controller._aggregator_sa)
+        self.assertIsNone(self.controller._service)
+
+    def test_automatic_discovery_requires_battery_soc_priority(self):
+        self.feed_aggregate(0x8E, status_1="01790a0120013577")
 
         self.assertIsNone(self.controller._aggregator_sa)
         self.assertIsNone(self.controller._service)
