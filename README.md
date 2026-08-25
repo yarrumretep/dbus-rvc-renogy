@@ -227,3 +227,7 @@ chmod 755 /data/dbus-rvc-renogy/setup
 
 Use the SetupHelper prompt or PackageManager UI to uninstall when this route
 was used. Do not also run the standalone installer for the same service.
+
+## License
+
+This project is released under the [MIT License](LICENSE).
