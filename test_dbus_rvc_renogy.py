@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import struct
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("dbus-rvc-renogy.py")
@@ -22,6 +23,26 @@ class Clock:
 
 
 class RawValueDecoderTests(unittest.TestCase):
+    def test_source_address_parser_accepts_documented_hex_forms(self):
+        self.assertIsNone(bridge._parse_source_address("auto"))
+        self.assertEqual(bridge._parse_source_address("0x8D"), 0x8D)
+        self.assertEqual(bridge._parse_source_address("8D"), 0x8D)
+        self.assertEqual(bridge._parse_source_address("141"), 141)
+
+    def test_source_address_parser_rejects_invalid_values(self):
+        for value in ("not-an-address", "-1", "0x100"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    bridge._parse_source_address(value)
+
+    def test_invalid_configured_source_address_has_clear_startup_error(self):
+        with mock.patch.dict(
+                bridge.os.environ,
+                {"RVC_RENOGY_SOURCE_ADDRESS": "not-an-address"}):
+            with self.assertRaisesRegex(
+                    SystemExit, "Invalid RVC_RENOGY_SOURCE_ADDRESS"):
+                bridge._configured_source_address()
+
     def test_u8_rejects_all_rvc_special_values(self):
         self.assertEqual(bridge._u8(bytes([0xFC]), 0), 0xFC)
         for value in (0xFD, 0xFE, 0xFF):
@@ -307,6 +328,34 @@ class ControllerStartupTests(unittest.TestCase):
         self.feed_aggregate(0x8E, status_1="01790a0120013577")
 
         self.assertIsNone(self.controller._aggregator_sa)
+        self.assertIsNone(self.controller._service)
+
+    def test_fixed_source_address_registers_complete_priority_120_source(self):
+        self.controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=lambda *args: FakeSocket(),
+            clock=self.clock, aggregator_sa=0x8D)
+
+        self.feed_aggregate(0x8D)
+
+        self.assertEqual(self.controller._aggregator_sa, 0x8D)
+        self.assertIsNotNone(self.controller._service)
+
+    def test_fixed_source_address_ignores_other_sources(self):
+        self.controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=lambda *args: FakeSocket(),
+            clock=self.clock, aggregator_sa=0x8D)
+
+        self.feed_aggregate(0x8E)
+
+        self.assertIsNone(self.controller._service)
+
+    def test_fixed_source_address_rejects_gx_priority(self):
+        self.controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=lambda *args: FakeSocket(),
+            clock=self.clock, aggregator_sa=0xA1)
+
+        self.feed_aggregate(0xA1, status_1="01770a0120013577")
+
         self.assertIsNone(self.controller._service)
 
     def test_automatic_discovery_requires_bank_capacity_frame(self):

@@ -42,19 +42,37 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.6"
+BRIDGE_VERSION = "0.4.7"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
 
-def _configured_source_address():
-    raw_value = os.environ.get("RVC_RENOGY_SOURCE_ADDRESS", "auto").strip()
+def _parse_source_address(raw_value):
+    raw_value = raw_value.strip()
     if raw_value.lower() == "auto":
         return None
-    value = int(raw_value, 0)
+    try:
+        value = int(raw_value, 0)
+    except ValueError:
+        try:
+            value = int(raw_value, 16)
+        except ValueError:
+            raise ValueError(
+                "source address must be auto, decimal, 0x-prefixed hex, "
+                "or bare hex (for example 8D)") from None
     if value < 0 or value > 0xFF:
-        raise ValueError("RVC_RENOGY_SOURCE_ADDRESS must be auto or 0..255")
+        raise ValueError("source address must be between 0x00 and 0xFF")
     return value
+
+
+def _configured_source_address():
+    raw_value = os.environ.get("RVC_RENOGY_SOURCE_ADDRESS", "auto")
+    try:
+        return _parse_source_address(raw_value)
+    except ValueError as error:
+        raise SystemExit(
+            "Invalid RVC_RENOGY_SOURCE_ADDRESS=%r: %s"
+            % (raw_value, error)) from None
 
 
 CONFIGURED_AGGREGATOR_SA = _configured_source_address()
@@ -337,6 +355,7 @@ class RvcBattery:
         self._can_watch = None
         self._can_opened_at = None
         self._last_can_open_attempt = None
+        self._fixed_priority_warning_printed = False
         self._open_can()
         self._glib.timeout_add(1000, self._tick)
 
@@ -363,7 +382,20 @@ class RvcBattery:
         if self._configured_aggregator_sa is not None:
             if source_address != self._configured_aggregator_sa:
                 return False
-            return self._state.update(dgn, data)
+            if not self._state.update(dgn, data):
+                return False
+            if self._state.source_priority != RENOGY_AGGREGATE_PRIORITY:
+                if (self._state.source_priority is not None
+                        and not self._fixed_priority_warning_printed):
+                    print(
+                        "Ignoring configured source 0x%02X: DC source "
+                        "priority %d is not Renogy aggregate priority %d"
+                        % (source_address, self._state.source_priority,
+                           RENOGY_AGGREGATE_PRIORITY),
+                        flush=True)
+                    self._fixed_priority_warning_printed = True
+                return False
+            return True
 
         # 254 is the J1939 null address and 255 is the global address; neither
         # can identify a claimed source node.

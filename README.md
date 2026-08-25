@@ -153,7 +153,10 @@ export RVC_RENOGY_CCL_CEILING=300.0
 Source-address discovery is automatic by default. The REGO bank can elect a
 different physical battery as its aggregate publisher after a restart, so a
 fixed address such as `0x8D` is suitable only as a temporary diagnostic
-override.
+override. Fixed addresses may use `0x8D`, bare hexadecimal `8D`, or decimal
+syntax. The selected source must still identify itself as priority 120, which
+prevents accidentally feeding the bridge from the GX's priority-119 RV-C
+rebroadcast.
 
 ## Controlled first run
 

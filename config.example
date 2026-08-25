@@ -5,7 +5,7 @@
 # export RVC_RENOGY_CAN_INTERFACE=can0
 # Automatic discovery survives the REGO bank moving its aggregate role to a
 # different source address after reboot. Set a hexadecimal address only for
-# controlled diagnostics.
+# controlled diagnostics. Both 0x8D and bare hexadecimal 8D are accepted.
 # export RVC_RENOGY_SOURCE_ADDRESS=auto
 # export RVC_RENOGY_DEVICE_INSTANCE=1
 # export RVC_RENOGY_CVL_CEILING=14.6
