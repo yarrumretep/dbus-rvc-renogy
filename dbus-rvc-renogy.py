@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.10"
+BRIDGE_VERSION = "0.4.11"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -77,7 +77,65 @@ def _configured_source_address():
 
 CONFIGURED_AGGREGATOR_SA = _configured_source_address()
 DC_SOURCE_INSTANCE = 1
-DEVICE_INSTANCE = int(os.environ.get("RVC_RENOGY_DEVICE_INSTANCE", "1"), 0)
+PREFERRED_DEVICE_INSTANCE = 1
+
+
+def _configured_device_instance():
+    raw_value = os.environ.get("RVC_RENOGY_DEVICE_INSTANCE", "auto").strip()
+    if raw_value.lower() == "auto":
+        return None
+    try:
+        value = int(raw_value, 0)
+    except ValueError:
+        raise SystemExit(
+            "Invalid RVC_RENOGY_DEVICE_INSTANCE=%r: expected auto or 0..255"
+            % raw_value) from None
+    if value < 0 or value > 0xFF:
+        raise SystemExit(
+            "Invalid RVC_RENOGY_DEVICE_INSTANCE=%r: expected auto or 0..255"
+            % raw_value)
+    return value
+
+
+CONFIGURED_DEVICE_INSTANCE = _configured_device_instance()
+# Offline construction retains the preferred value. main() replaces it with
+# the collision-free instance allocated by com.victronenergy.settings.
+DEVICE_INSTANCE = (PREFERRED_DEVICE_INSTANCE
+                   if CONFIGURED_DEVICE_INSTANCE is None
+                   else CONFIGURED_DEVICE_INSTANCE)
+DEVICE_INSTANCE_SETTING = (
+    "/Settings/Devices/dbus_rvc_renogy_%s/ClassAndVrmInstance"
+    % CAN_INTERFACE.replace("/", "_"))
+
+
+def _resolve_device_instance(bus, settings_device_class,
+                             configured=CONFIGURED_DEVICE_INSTANCE):
+    if configured is not None:
+        return configured
+
+    settings = settings_device_class(
+        bus,
+        {"instance": [
+            DEVICE_INSTANCE_SETTING,
+            "battery:%d" % PREFERRED_DEVICE_INSTANCE,
+            "", "",
+        ]},
+        None,
+        timeout=10)
+    class_and_instance = str(settings["instance"])
+    try:
+        device_class, raw_instance = class_and_instance.split(":", 1)
+        instance = int(raw_instance)
+    except (ValueError, TypeError):
+        raise SystemExit(
+            "Invalid Venus device-instance setting %r at %s"
+            % (class_and_instance, DEVICE_INSTANCE_SETTING)) from None
+    if device_class != "battery" or instance < 0 or instance > 0xFF:
+        raise SystemExit(
+            "Invalid Venus device-instance setting %r at %s"
+            % (class_and_instance, DEVICE_INSTANCE_SETTING))
+    print("Using Venus battery device instance %d" % instance, flush=True)
+    return instance
 
 SERVICE_NAME = "com.victronenergy.battery.rvc_renogy_%s" % CAN_INTERFACE
 PRODUCT_ID = 0xB007
@@ -363,7 +421,8 @@ class BatteryState:
 
 class RvcBattery:
     def __init__(self, glib, service_class, socket_factory=None, clock=None,
-                 aggregator_sa=CONFIGURED_AGGREGATOR_SA):
+                 aggregator_sa=CONFIGURED_AGGREGATOR_SA,
+                 device_instance=DEVICE_INSTANCE):
         self._glib = glib
         self._clock = clock or time.monotonic
         self._state = BatteryState(clock=self._clock)
@@ -371,6 +430,7 @@ class RvcBattery:
         self._aggregator_sa = aggregator_sa
         self._candidate_states = {}
         self._service_class = service_class
+        self._device_instance = device_instance
         self._service = None
         self._socket_factory = socket_factory or socket.socket
         self._sock = None
@@ -445,7 +505,8 @@ class RvcBattery:
         return source_address == self._aggregator_sa
 
     @staticmethod
-    def _create_service(service_class, initial_values=None):
+    def _create_service(service_class, initial_values=None,
+                        device_instance=DEVICE_INSTANCE):
         initial_values = initial_values or {}
 
         def initial(path, default=None):
@@ -455,7 +516,7 @@ class RvcBattery:
         service.add_path("/Mgmt/ProcessName", "dbus-rvc-renogy")
         service.add_path("/Mgmt/ProcessVersion", BRIDGE_VERSION)
         service.add_path("/Mgmt/Connection", "RV-C")
-        service.add_path("/DeviceInstance", DEVICE_INSTANCE)
+        service.add_path("/DeviceInstance", device_instance)
         service.add_path("/ProductId", PRODUCT_ID)
         service.add_path("/ProductName", PRODUCT_NAME)
         service.add_path("/FirmwareVersion", None)
@@ -566,7 +627,8 @@ class RvcBattery:
 
         initial_values = self._state.snapshot(now)
         self._service = self._create_service(
-            self._service_class, initial_values=initial_values)
+            self._service_class, initial_values=initial_values,
+            device_instance=self._device_instance)
         print("Registered live BMS service %s" % SERVICE_NAME, flush=True)
         return True
 
@@ -598,15 +660,18 @@ class RvcBattery:
 
 def main():
     from gi.repository import GLib
+    import dbus
     import dbus.mainloop.glib
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     sys.path.insert(
         1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")
+    from settingsdevice import SettingsDevice
     from vedbus import VeDbusService
 
     print("dbus-rvc-renogy %s" % BRIDGE_VERSION, flush=True)
-    RvcBattery(GLib, VeDbusService)
+    device_instance = _resolve_device_instance(dbus.SystemBus(), SettingsDevice)
+    RvcBattery(GLib, VeDbusService, device_instance=device_instance)
     GLib.MainLoop().run()
 
 

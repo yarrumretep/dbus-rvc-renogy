@@ -12,7 +12,7 @@ The defaults match the tested three-pack, 1200 Ah installation:
 
 - RV-C interface: `can0`
 - Renogy bank aggregator source address: automatically discovered
-- Venus device instance: `1`
+- Venus device instance: allocated persistently by Venus OS, preferring `1`
 - Maximum accepted charge voltage: `14.6 V`
 - Maximum accepted charge current: `300 A`
 
@@ -170,7 +170,7 @@ Supported variables are:
 ```sh
 export RVC_RENOGY_CAN_INTERFACE=can0
 export RVC_RENOGY_SOURCE_ADDRESS=auto
-export RVC_RENOGY_DEVICE_INSTANCE=1
+export RVC_RENOGY_DEVICE_INSTANCE=auto
 export RVC_RENOGY_CVL_CEILING=14.6
 export RVC_RENOGY_CCL_CEILING=300.0
 ```
@@ -182,6 +182,12 @@ override. Fixed addresses may use `0x8D`, bare hexadecimal `8D`, or decimal
 syntax. The selected source must still identify itself as priority 120, which
 prevents accidentally feeding the bridge from the GX's priority-119 RV-C
 rebroadcast.
+
+With `RVC_RENOGY_DEVICE_INSTANCE=auto`, the default, Venus stores the allocation
+at `/Settings/Devices/dbus_rvc_renogy_<interface>/ClassAndVrmInstance`. It
+prefers `battery:1` but automatically selects another free battery instance if
+that number is already reserved. A numeric override remains available for
+controlled recovery, but it bypasses collision prevention.
 
 ## Controlled first run
 
@@ -220,7 +226,7 @@ Expected values for the validated three-pack installation include:
 ```text
 ProductId                 45063 (0xB007)
 ProductName               CAN-bus BMS battery
-DeviceInstance            1
+DeviceInstance            Venus-allocated (often 1)
 Connected                 1
 Capacity                  1200
 Info/MaxChargeVoltage     14.4
@@ -283,6 +289,10 @@ installer to restart the supervised service, and waits until D-Bus reports the
 version from the local `version` file. It does not copy Git history or delete
 operator-created files on the GX device.
 
+Upgrades preserve an existing `config`. If it explicitly exports
+`RVC_RENOGY_DEVICE_INSTANCE=1`, change that value to `auto` or remove the line
+to enable Venus's collision-free allocation.
+
 If a previous diagnostic session pinned `RVC_RENOGY_SOURCE_ADDRESS`, return it
 to automatic discovery during deployment:
 
@@ -302,8 +312,9 @@ The resulting section in `/data/rc.local` is:
 # END dbus-rvc-renogy
 ```
 
-Other commands already present in `rc.local` remain unchanged. If the file has
-an `exit 0` line, the installer places its block before it.
+Other commands already present in `rc.local` remain unchanged. If the final
+top-level command is `exit 0`, the installer places its block before it;
+conditional or earlier exits are not mistaken for the file terminator.
 
 Confirm that the installed process reports the expected version:
 

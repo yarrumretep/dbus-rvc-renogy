@@ -43,6 +43,24 @@ class RawValueDecoderTests(unittest.TestCase):
                     SystemExit, "Invalid RVC_RENOGY_SOURCE_ADDRESS"):
                 bridge._configured_source_address()
 
+    def test_configured_device_instance_accepts_auto_or_number(self):
+        with mock.patch.dict(
+                bridge.os.environ,
+                {"RVC_RENOGY_DEVICE_INSTANCE": "auto"}):
+            self.assertIsNone(bridge._configured_device_instance())
+        with mock.patch.dict(
+                bridge.os.environ,
+                {"RVC_RENOGY_DEVICE_INSTANCE": "7"}):
+            self.assertEqual(bridge._configured_device_instance(), 7)
+
+    def test_invalid_configured_device_instance_has_clear_startup_error(self):
+        with mock.patch.dict(
+                bridge.os.environ,
+                {"RVC_RENOGY_DEVICE_INSTANCE": "battery:7"}):
+            with self.assertRaisesRegex(
+                    SystemExit, "Invalid RVC_RENOGY_DEVICE_INSTANCE"):
+                bridge._configured_device_instance()
+
     def test_u8_rejects_all_rvc_special_values(self):
         self.assertEqual(bridge._u8(bytes([0xFC]), 0), 0xFC)
         for value in (0xFD, 0xFE, 0xFF):
@@ -273,6 +291,20 @@ class FakeService:
 
     def __setitem__(self, path, value):
         self.paths[path] = value
+
+
+class FakeSettingsDevice:
+    value = "battery:2"
+    calls = []
+
+    def __init__(self, bus, supported_settings, callback, timeout=0):
+        self.__class__.calls.append(
+            (bus, supported_settings, callback, timeout))
+
+    def __getitem__(self, key):
+        if key != "instance":
+            raise KeyError(key)
+        return self.value
 
 
 class FakeSocket:
@@ -520,6 +552,38 @@ class ControllerStartupTests(unittest.TestCase):
 
 
 class ServiceContractTests(unittest.TestCase):
+    def setUp(self):
+        FakeSettingsDevice.calls = []
+
+    def test_venus_settings_allocates_collision_free_device_instance(self):
+        instance = bridge._resolve_device_instance(
+            object(), FakeSettingsDevice, configured=None)
+
+        self.assertEqual(instance, 2)
+        _bus, supported, callback, timeout = FakeSettingsDevice.calls[0]
+        self.assertEqual(
+            supported["instance"][0], bridge.DEVICE_INSTANCE_SETTING)
+        self.assertEqual(supported["instance"][1], "battery:1")
+        self.assertIsNone(callback)
+        self.assertEqual(timeout, 10)
+
+    def test_explicit_device_instance_bypasses_venus_allocation(self):
+        instance = bridge._resolve_device_instance(
+            object(), FakeSettingsDevice, configured=7)
+
+        self.assertEqual(instance, 7)
+        self.assertEqual(FakeSettingsDevice.calls, [])
+
+    def test_invalid_venus_device_instance_is_rejected(self):
+        FakeSettingsDevice.value = "solarcharger:2"
+        try:
+            with self.assertRaisesRegex(
+                    SystemExit, "Invalid Venus device-instance setting"):
+                bridge._resolve_device_instance(
+                    object(), FakeSettingsDevice, configured=None)
+        finally:
+            FakeSettingsDevice.value = "battery:2"
+
     def test_service_matches_the_working_venus_332_contract(self):
         service = bridge.RvcBattery._create_service(FakeService)
 
@@ -543,6 +607,12 @@ class ServiceContractTests(unittest.TestCase):
         self.assertEqual(
             {path for path in service.paths if path.startswith("/Alarms/")},
             expected_alarms)
+
+    def test_service_uses_resolved_device_instance(self):
+        service = bridge.RvcBattery._create_service(
+            FakeService, device_instance=7)
+
+        self.assertEqual(service.paths["/DeviceInstance"], 7)
 
 
 if __name__ == "__main__":

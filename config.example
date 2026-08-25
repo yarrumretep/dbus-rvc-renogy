@@ -7,6 +7,8 @@
 # different source address after reboot. Set a hexadecimal address only for
 # controlled diagnostics. Both 0x8D and bare hexadecimal 8D are accepted.
 # export RVC_RENOGY_SOURCE_ADDRESS=auto
-# export RVC_RENOGY_DEVICE_INSTANCE=1
+# Let Venus allocate a persistent, collision-free battery instance (preferred).
+# Set a number only for controlled recovery; a forced number may collide.
+# export RVC_RENOGY_DEVICE_INSTANCE=auto
 # export RVC_RENOGY_CVL_CEILING=14.6
 # export RVC_RENOGY_CCL_CEILING=300.0
