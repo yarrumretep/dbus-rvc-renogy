@@ -1,0 +1,117 @@
+name: Compatibility or bug report
+description: Report a REGO topology, Venus OS compatibility result, or driver problem.
+title: "[Report]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve `dbus-rvc-renogy`. This bridge is currently
+        validated with Renogy REGO RBT12400LFPL-SHBT batteries. Please collect
+        the requested output passively; do not transmit test frames onto the
+        RV-C bus. Remove passwords, keys, and other secrets before submitting.
+
+  - type: dropdown
+    id: report_type
+    attributes:
+      label: Report type
+      options:
+        - New compatible topology
+        - Installation or startup problem
+        - Incorrect battery measurement or limit
+        - Lost BMS or stale connection
+        - Other behavior
+    validations:
+      required: true
+
+  - type: input
+    id: battery_model
+    attributes:
+      label: Battery model
+      description: Include the complete Renogy model or SKU and hardware generation.
+      placeholder: RBT12400LFPL-SHBT (G1)
+    validations:
+      required: true
+
+  - type: input
+    id: topology
+    attributes:
+      label: Battery and RV-C topology
+      description: Include battery count, parallel/series arrangement, other RV-C devices, and termination locations.
+      placeholder: One REGO battery; Cerbo GX at one end; two 120-ohm terminators
+    validations:
+      required: true
+
+  - type: input
+    id: venus_version
+    attributes:
+      label: GX device and Venus OS version
+      placeholder: Cerbo GX, Venus OS v3.75
+    validations:
+      required: true
+
+  - type: input
+    id: bridge_version
+    attributes:
+      label: dbus-rvc-renogy version
+      description: Run `dbus -y com.victronenergy.battery.rvc_renogy_can0 /Mgmt/ProcessVersion GetValue` when the service exists.
+      placeholder: 0.4.4
+
+  - type: textarea
+    id: observed_behavior
+    attributes:
+      label: Observed behavior
+      description: Explain what happened, what you expected, and whether charging or inverter operation was affected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: inventory
+    attributes:
+      label: RV-C inventory
+      description: Paste the complete output from `rvc-inventory.py`. Ten to thirty seconds is normally sufficient.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: aggregator_log
+    attributes:
+      label: Aggregator selection and service log
+      description: Paste relevant output from `/var/log/dbus-rvc-renogy/current`, including the selected aggregate source and any traceback or stale-data message.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: dbus_values
+    attributes:
+      label: Battery and system D-Bus values
+      description: Include the battery service values and the system's ActiveBatteryService, ActiveBmsService, and BMS control values when available.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Driver configuration
+      description: Paste `/data/dbus-rvc-renogy/config`, or state that the defaults are in use.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add CAN error statistics, wiring details, photographs, or reproduction steps if relevant.
+
+  - type: checkboxes
+    id: safety_confirmation
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I confirmed voltage, current polarity, capacity, and charge limits before allowing DVCC to control charging.
+          required: true
+        - label: I removed passwords, authentication keys, and other secrets from the submitted output.
+          required: true
