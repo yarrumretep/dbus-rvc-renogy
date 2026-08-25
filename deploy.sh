@@ -6,7 +6,8 @@ usage() {
 Usage: ./deploy.sh [--auto-source] [user@venus-host]
 
 Synchronize this checkout to /data/dbus-rvc-renogy, preserve the remote
-config file, restart the supervised service, and verify the running version.
+config file, restart the supervised process, and report whether BMS data is
+already live.
 
   --auto-source  Replace an existing fixed source-address override with auto.
 
@@ -80,7 +81,7 @@ EXPECTED_VERSION=$2
 PACKAGE_DIR=/data/dbus-rvc-renogy
 CONFIG=$PACKAGE_DIR/config
 SERVICE=/service/dbus-rvc-renogy
-DBUS_SERVICE=com.victronenergy.battery.rvc_renogy_can0
+STATUS=/run/dbus-rvc-renogy.status
 
 if [ "$AUTO_SOURCE" -eq 1 ] && [ -f "$CONFIG" ]; then
     sed -i \
@@ -89,24 +90,44 @@ if [ "$AUTO_SOURCE" -eq 1 ] && [ -f "$CONFIG" ]; then
 fi
 
 chmod 755 "$PACKAGE_DIR/deploy.sh"
+rm -f "$STATUS"
 "$PACKAGE_DIR/install-service.sh"
 
 attempt=0
 while [ "$attempt" -lt 20 ]; do
-    reported=$(
-        dbus -y "$DBUS_SERVICE" /Mgmt/ProcessVersion GetValue 2>/dev/null |
-            tr -d "'[:space:]" || true
-    )
-    if [ "$reported" = "$EXPECTED_VERSION" ]; then
-        echo "Verified $DBUS_SERVICE v$reported"
-        svstat "$SERVICE"
-        exit 0
+    if [ -f "$STATUS" ]; then
+        reported=$(sed -n 's/^version=//p' "$STATUS")
+        interface=$(sed -n 's/^interface=//p' "$STATUS")
+        status_pid=$(sed -n 's/^pid=//p' "$STATUS")
+        service_pid=$(
+            svstat "$SERVICE" 2>/dev/null |
+                sed -n 's/.*up (pid \([0-9][0-9]*\)).*/\1/p'
+        )
+        if [ "$reported" = "$EXPECTED_VERSION" ] \
+                && [ -n "$interface" ] \
+                && [ -n "$status_pid" ] \
+                && [ "$status_pid" = "$service_pid" ] \
+                && kill -0 "$status_pid" 2>/dev/null; then
+            DBUS_SERVICE="com.victronenergy.battery.rvc_renogy_$interface"
+            echo "Verified supervised process v$reported on $interface"
+            svstat "$SERVICE"
+            dbus_version=$(
+                dbus -y "$DBUS_SERVICE" /Mgmt/ProcessVersion GetValue \
+                    2>/dev/null | tr -d "'[:space:]" || true
+            )
+            if [ "$dbus_version" = "$EXPECTED_VERSION" ]; then
+                echo "Live BMS service: $DBUS_SERVICE v$dbus_version"
+            else
+                echo "BMS service is not live yet; waiting for fresh battery measurements and limits"
+            fi
+            exit 0
+        fi
     fi
     attempt=$((attempt + 1))
     sleep 1
 done
 
-echo "Service did not publish expected version $EXPECTED_VERSION" >&2
+echo "Supervised process did not initialize as version $EXPECTED_VERSION" >&2
 svstat "$SERVICE" >&2 || true
 tai64nlocal < /var/log/dbus-rvc-renogy/current | tail -n 30 >&2 || true
 exit 1

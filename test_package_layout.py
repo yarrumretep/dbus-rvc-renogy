@@ -67,6 +67,14 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn('svc -d "$ACTIVE_SERVICE"', installer)
         self.assertIn('svc -u "$ACTIVE_SERVICE"', installer)
 
+    def test_deploy_verifies_process_then_interface_specific_dbus(self):
+        deploy = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("/run/dbus-rvc-renogy.status", deploy)
+        self.assertIn("rvc_renogy_$interface", deploy)
+        self.assertNotIn("rvc_renogy_can0", deploy)
+        self.assertIn("BMS service is not live yet", deploy)
+
     def test_install_and_uninstall_preserve_existing_rc_local(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

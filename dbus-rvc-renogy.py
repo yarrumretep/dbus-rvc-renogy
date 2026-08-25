@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.12"
+BRIDGE_VERSION = "0.4.13"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -137,9 +137,23 @@ def _resolve_device_instance(bus, settings_device_class,
     print("Using Venus battery device instance %d" % instance, flush=True)
     return instance
 
+
 SERVICE_NAME = "com.victronenergy.battery.rvc_renogy_%s" % CAN_INTERFACE
+RUNTIME_STATUS_FILE = "/run/dbus-rvc-renogy.status"
 PRODUCT_ID = 0xB007
 PRODUCT_NAME = "CAN-bus BMS battery"
+
+
+def _write_runtime_status(path=RUNTIME_STATUS_FILE, interface=CAN_INTERFACE,
+                          process_id=None):
+    process_id = os.getpid() if process_id is None else process_id
+    temporary = "%s.%d.tmp" % (path, process_id)
+    with open(temporary, "w", encoding="ascii") as status_file:
+        status_file.write("version=%s\n" % BRIDGE_VERSION)
+        status_file.write("interface=%s\n" % interface)
+        status_file.write("pid=%d\n" % process_id)
+        status_file.write("state=initialized\n")
+    os.replace(temporary, path)
 
 # Hard safety bounds. Valid lower CVLs are not raised; a BMS may intentionally
 # request a low voltage. Values outside the plausible range stop charging.
@@ -691,6 +705,9 @@ def main():
     print("dbus-rvc-renogy %s" % BRIDGE_VERSION, flush=True)
     device_instance = _resolve_device_instance(dbus.SystemBus(), SettingsDevice)
     RvcBattery(GLib, VeDbusService, device_instance=device_instance)
+    _write_runtime_status()
+    print("dbus-rvc-renogy %s initialized on %s; waiting for aggregate data"
+          % (BRIDGE_VERSION, CAN_INTERFACE), flush=True)
     GLib.MainLoop().run()
 
 

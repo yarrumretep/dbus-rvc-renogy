@@ -4,6 +4,7 @@
 import importlib.util
 from pathlib import Path
 import struct
+import tempfile
 import unittest
 from unittest import mock
 
@@ -655,6 +656,17 @@ class ServiceContractTests(unittest.TestCase):
             FakeService, device_instance=7)
 
         self.assertEqual(service.paths["/DeviceInstance"], 7)
+
+    def test_runtime_status_identifies_process_version_and_interface(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = str(Path(temp_dir) / "runtime-status")
+            bridge._write_runtime_status(
+                path=status_path, interface="can9", process_id=123)
+
+            self.assertEqual(
+                Path(status_path).read_text(encoding="ascii"),
+                "version=%s\ninterface=can9\npid=123\nstate=initialized\n"
+                % bridge.BRIDGE_VERSION)
 
 
 if __name__ == "__main__":

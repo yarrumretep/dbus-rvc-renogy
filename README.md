@@ -286,9 +286,11 @@ python3 -m unittest -v test_dbus_rvc_renogy.py test_rvc_inventory.py test_packag
 ```
 
 The deployment uses `rsync` over SSH, preserves the remote `config`, runs the
-installer to restart the supervised service, and waits until D-Bus reports the
-version from the local `version` file. It does not copy Git history or delete
-operator-created files on the GX device.
+installer, and verifies that the supervised process initialized with the local
+`version`. It then reports separately whether the interface-specific D-Bus BMS
+service is live. A sleeping or disconnected battery therefore does not make a
+successful code deployment look like a failure. It does not copy Git history
+or delete operator-created files on the GX device.
 
 Upgrades preserve an existing `config`. If it explicitly exports
 `RVC_RENOGY_DEVICE_INSTANCE=1`, change that value to `auto` or remove the line
