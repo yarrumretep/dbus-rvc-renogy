@@ -87,6 +87,9 @@ class PackageLayoutTests(unittest.TestCase):
 
             rc_local.write_text(
                 "#!/bin/bash\n"
+                "if [ ! -f /data/.ready ]; then\n"
+                "    exit 0\n"
+                "fi\n"
                 "bash /data/etc/dbus-serialbattery/reinstall-local.sh\n",
                 encoding="utf-8")
 
@@ -113,6 +116,7 @@ class PackageLayoutTests(unittest.TestCase):
             hook = "%s/install-service.sh --boot" % package
             existing = "bash /data/etc/dbus-serialbattery/reinstall-local.sh"
             self.assertIn(existing, contents)
+            self.assertLess(contents.index("fi\n"), contents.index(hook))
             self.assertLess(contents.index(existing), contents.index(hook))
             self.assertEqual(contents.count(hook), 1)
             self.assertEqual(

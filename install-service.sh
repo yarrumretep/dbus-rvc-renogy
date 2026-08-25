@@ -34,11 +34,6 @@ install_boot_hook() {
         return 1
     fi
 
-    if [ -f "$RC_LOCAL" ] && grep -Fqx "$HOOK_COMMAND" "$RC_LOCAL"; then
-        chmod 755 "$RC_LOCAL"
-        return 0
-    fi
-
     rc_dir=$(dirname "$RC_LOCAL")
     mkdir -p "$rc_dir"
     rc_temp=$(mktemp "$rc_dir/.rc.local.dbus-rvc-renogy.XXXXXX")
@@ -48,17 +43,25 @@ install_boot_hook() {
         awk -v hook_begin="$HOOK_BEGIN" \
             -v hook_command="$HOOK_COMMAND" \
             -v hook_end="$HOOK_END" '
-            BEGIN { inserted = 0 }
-            !inserted && $0 ~ /^[[:space:]]*exit[[:space:]]+0[[:space:]]*$/ {
-                print hook_begin
-                print hook_command
-                print hook_end
-                inserted = 1
+            $0 == hook_begin || $0 == hook_command || $0 == hook_end {
+                next
             }
-            { print }
+            {
+                lines[++count] = $0
+                if ($0 !~ /^[[:space:]]*($|#)/) last_command = count
+            }
             END {
-                if (!inserted) {
-                    if (NR > 0) print ""
+                before_final_exit = last_command > 0 && lines[last_command] ~ /^exit[[:space:]]+0[[:space:]]*$/
+                for (i = 1; i <= count; i++) {
+                    if (before_final_exit && i == last_command) {
+                        print hook_begin
+                        print hook_command
+                        print hook_end
+                    }
+                    print lines[i]
+                }
+                if (!before_final_exit) {
+                    if (count > 0 && lines[count] !~ /^[[:space:]]*$/) print ""
                     print hook_begin
                     print hook_command
                     print hook_end
