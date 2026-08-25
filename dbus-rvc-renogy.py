@@ -16,7 +16,7 @@ aggregate source instead of assuming the initially observed address 0x8D:
     0x1FFFC  DC_SOURCE_STATUS_2   temperature and state of charge
     0x1FFFB  DC_SOURCE_STATUS_3   state of health
     0x1FEC9  DC_SOURCE_STATUS_4   charge voltage/current limits
-    0x1FEC7  DC_SOURCE_STATUS_6   battery status flags (retained, not guessed)
+    0x1FEC7  DC_SOURCE_STATUS_6   standardized limit/disconnect flags
     0x1FEA5  DC_SOURCE_STATUS_11  full installed capacity
 
 The bridge intentionally does not combine the per-pack BATTERY_STATUS frames.
@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.9"
+BRIDGE_VERSION = "0.4.10"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -90,14 +90,10 @@ CVL_MAX_VALID = 16.0
 CVL_CEILING = float(os.environ.get("RVC_RENOGY_CVL_CEILING", "14.6"))
 CCL_CEILING = float(os.environ.get("RVC_RENOGY_CCL_CEILING", "300.0"))
 
-LOW_VOLTAGE_ALARM = 12.0
-LOW_SOC_ALARM = 15.0
-LOW_TEMPERATURE_ALARM = 0.0
-HIGH_TEMPERATURE_ALARM = 50.0
-
 MEASUREMENTS_STALE_AFTER = 10.0
 # The aggregate limit frame was observed every five seconds.
 LIMITS_STALE_AFTER = 15.0
+STATUS_STALE_AFTER = 15.0
 # Reopen a socket that has not received measurement traffic. During Venus OS
 # startup can0 can be reconfigured after the service first binds to it.
 CAN_REBIND_AFTER = 10.0
@@ -200,6 +196,7 @@ class BatteryState:
 
         self.measurements_at = None
         self.limits_at = None
+        self.status_6_at = None
 
     def update(self, dgn, data):
         """Decode one eight-byte bank aggregate payload.
@@ -238,10 +235,8 @@ class BatteryState:
             self.limits_at = now
 
         elif dgn == DGN_DC_SOURCE_STATUS_6:
-            # The exact bit mapping has not yet been corroborated against the
-            # RV-C specification. Preserve it for diagnostics; do not invent
-            # alarm semantics that can influence system behavior.
             self.status_6_flags = bytes(data[2:5])
+            self.status_6_at = now
 
         elif dgn == DGN_DC_SOURCE_STATUS_11:
             self.full_capacity = _u16(data, 3)
@@ -260,6 +255,50 @@ class BatteryState:
                 and self.max_charge_current is not None
                 and self.limits_at is not None
                 and (now - self.limits_at) < LIMITS_STALE_AFTER)
+
+    def status_6_fresh(self, now=None):
+        now = self._clock() if now is None else now
+        return (self.status_6_flags is not None
+                and self.status_6_at is not None
+                and (now - self.status_6_at) < STATUS_STALE_AFTER)
+
+    @staticmethod
+    def _status_alarm_level(limit_status, disconnect_status):
+        # RV-C uint2: 0=normal/connected, 1=asserted/disconnected,
+        # 2=field error, 3=not available. A reached limit is a warning; an
+        # actual disconnect or an error in the safety status is an alarm.
+        if disconnect_status in (1, 2) or limit_status == 2:
+            return 2
+        if limit_status == 1:
+            return 1
+        return 0
+
+    def _status_6_alarms(self, now):
+        names = (
+            "HighVoltage", "LowVoltage", "LowSoc", "LowTemperature",
+            "HighTemperature", "HighCurrent",
+        )
+        if not self.status_6_fresh(now):
+            return {name: 0 for name in names}
+
+        def pair(byte_index, shift):
+            return (self.status_6_flags[byte_index] >> shift) & 0x03
+
+        fields = {
+            "HighVoltage": (0, 0, 2),
+            "LowVoltage": (0, 4, 6),
+            "LowSoc": (1, 0, 2),
+            "LowTemperature": (1, 4, 6),
+            "HighTemperature": (2, 0, 2),
+            "HighCurrent": (2, 4, 6),
+        }
+        return {
+            name: self._status_alarm_level(
+                pair(byte_index, limit_shift),
+                pair(byte_index, disconnect_shift))
+            for name, (byte_index, limit_shift, disconnect_shift)
+            in fields.items()
+        }
 
     def _safe_limits(self, now):
         if not self.measurements_fresh(now) or not self.limits_fresh(now):
@@ -315,25 +354,9 @@ class BatteryState:
             "/Capacity": self.full_capacity if connected else None,
         }
 
-        voltage = self.voltage if connected else None
-        temperature = self.temperature if connected else None
-        soc = self.soc if connected else None
-        current = self.current if connected else None
-
         values.update({
-            "/Alarms/LowVoltage": (
-                2 if voltage is not None and voltage < LOW_VOLTAGE_ALARM else 0),
-            "/Alarms/HighVoltage": 0,
-            "/Alarms/LowSoc": (
-                1 if soc is not None and soc < LOW_SOC_ALARM else 0),
-            "/Alarms/HighCurrent": (
-                2 if current is not None and abs(current) > CCL_CEILING else 0),
-            "/Alarms/LowTemperature": (
-                2 if temperature is not None
-                and temperature < LOW_TEMPERATURE_ALARM else 0),
-            "/Alarms/HighTemperature": (
-                2 if temperature is not None
-                and temperature > HIGH_TEMPERATURE_ALARM else 0),
+            "/Alarms/%s" % name: level
+            for name, level in self._status_6_alarms(now).items()
         })
         return values
 

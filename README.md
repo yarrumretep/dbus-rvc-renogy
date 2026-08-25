@@ -82,6 +82,9 @@ the aggregator's bank-level charge limit.
   measurement stream becomes stale, so the GUI and VRM do not show old data as
   live;
 - rejects implausible charge-voltage limits and clamps configured maxima;
+- derives Venus battery alarms from the standardized RV-C STATUS_6
+  limit/disconnect fields instead of guessed voltage, current, SOC, or
+  temperature thresholds;
 - converts REGO/RV-C current to Venus OS's charging-positive convention; and
 - publishes full installed capacity from `DC_SOURCE_STATUS_11`, not remaining
   capacity from `DC_SOURCE_STATUS_3`.
@@ -102,6 +105,12 @@ Venus OS. Under DVCC's default battery behavior, solar charging is normally
 limited to `0 A`, but an MPPT may still supply enough current to cover an active
 inverter's DC load. The intended fail-safe is therefore no net charging current
 into the battery, not guaranteed electrical isolation of every charger.
+
+For STATUS_6, a BMS-reported reached limit is published as a Venus warning
+(`1`); a reported disconnect or an error in the corresponding safety-status
+field is published as an alarm (`2`). Data-not-available and stale STATUS_6
+values do not assert an alarm. This avoids false cold-weather and high-discharge
+alarms while preserving conditions explicitly reported by the REGO BMS.
 
 ## Offline tests
 

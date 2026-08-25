@@ -185,6 +185,49 @@ class BatteryStateTests(unittest.TestCase):
         self.assertIsNone(self.state.soc)
         self.assertIsNone(values["/Soc"])
 
+    def test_measurement_thresholds_do_not_invent_battery_alarms(self):
+        # -0.5 C would previously raise a level-2 LowTemperature alarm.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_2, "01781022aef40001")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_6, "0178000000ffffff")
+
+        values = self.state.snapshot()
+
+        self.assertEqual(values["/Alarms/LowTemperature"], 0)
+        self.assertEqual(values["/Alarms/HighCurrent"], 0)
+
+    def test_status_6_limit_and_disconnect_alarm_levels(self):
+        cases = (
+            ("HighVoltage", 2, 0),
+            ("LowVoltage", 2, 4),
+            ("LowSoc", 3, 0),
+            ("LowTemperature", 3, 4),
+            ("HighTemperature", 4, 0),
+            ("HighCurrent", 4, 4),
+        )
+        for alarm, byte_index, shift in cases:
+            with self.subTest(alarm=alarm, state="limit"):
+                payload = bytearray.fromhex("0178000000ffffff")
+                payload[byte_index] = 1 << shift
+                self.state.update(bridge.DGN_DC_SOURCE_STATUS_6, payload)
+                self.assertEqual(
+                    self.state.snapshot()["/Alarms/%s" % alarm], 1)
+
+            with self.subTest(alarm=alarm, state="disconnect"):
+                payload = bytearray.fromhex("0178000000ffffff")
+                payload[byte_index] = 1 << (shift + 2)
+                self.state.update(bridge.DGN_DC_SOURCE_STATUS_6, payload)
+                self.assertEqual(
+                    self.state.snapshot()["/Alarms/%s" % alarm], 2)
+
+    def test_stale_status_6_clears_bms_alarms(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_6, "0178010000ffffff")
+        self.assertEqual(self.state.snapshot()["/Alarms/HighVoltage"], 1)
+
+        self.clock.now = bridge.STATUS_STALE_AFTER + 0.1
+
+        self.assertEqual(self.state.snapshot()["/Alarms/HighVoltage"], 0)
+
     def test_valid_limits_are_clamped_only_at_hard_ceilings(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
         # CVL 14.8 V and CCL 400 A are valid encodings but exceed the bridge's
