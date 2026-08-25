@@ -42,7 +42,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.11"
+BRIDGE_VERSION = "0.4.12"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -154,8 +154,9 @@ LIMITS_STALE_AFTER = 15.0
 STATUS_STALE_AFTER = 15.0
 # Reopen a socket that has not received measurement traffic. During Venus OS
 # startup can0 can be reconfigured after the service first binds to it.
-CAN_REBIND_AFTER = 10.0
-CAN_OPEN_RETRY_AFTER = 2.0
+CAN_REBIND_DELAYS = (10.0, 30.0)
+CAN_OPEN_RETRY_MIN = 2.0
+CAN_OPEN_RETRY_MAX = 60.0
 # The observed REGO bank aggregate identifies itself as the Battery SOC source.
 # Victron's RV-C export uses priority 119, so this distinguishes the physical
 # bank without relying on either device retaining a particular CAN address.
@@ -436,7 +437,10 @@ class RvcBattery:
         self._sock = None
         self._can_watch = None
         self._can_opened_at = None
-        self._last_can_open_attempt = None
+        self._can_frames_received = 0
+        self._no_traffic_rebinds = 0
+        self._next_can_open_attempt_at = None
+        self._can_open_retry_delay = CAN_OPEN_RETRY_MIN
         self._fixed_priority_warning_printed = False
         self._open_can()
         self._glib.timeout_add(1000, self._tick)
@@ -554,7 +558,6 @@ class RvcBattery:
     def _open_can(self):
         self._close_can()
         now = self._clock()
-        self._last_can_open_attempt = now
         sock = None
         try:
             sock = self._socket_factory(
@@ -568,13 +571,19 @@ class RvcBattery:
                 sock.close()
             except (AttributeError, OSError):
                 pass
-            print("CAN open failed on %s: %s" % (CAN_INTERFACE, error),
-                  flush=True)
+            retry_delay = self._can_open_retry_delay
+            self._next_can_open_attempt_at = now + retry_delay
+            self._can_open_retry_delay = min(
+                retry_delay * 2, CAN_OPEN_RETRY_MAX)
+            print("CAN open failed on %s: %s; retrying in %.0f s"
+                  % (CAN_INTERFACE, error, retry_delay), flush=True)
             return False
 
         self._sock = sock
         self._can_watch = watch
         self._can_opened_at = now
+        self._can_frames_received = 0
+        self._next_can_open_attempt_at = None
         print("Listening for Renogy aggregate frames on %s" % CAN_INTERFACE,
               flush=True)
         return True
@@ -588,6 +597,10 @@ class RvcBattery:
             except OSError:
                 pass
         self._sock = None
+        retry_delay = self._can_open_retry_delay
+        self._next_can_open_attempt_at = self._clock() + retry_delay
+        self._can_open_retry_delay = min(
+            retry_delay * 2, CAN_OPEN_RETRY_MAX)
         # Returning False removes the current GLib watch.
         self._can_watch = None
 
@@ -602,6 +615,9 @@ class RvcBattery:
 
         if len(frame) < 16:
             return True
+
+        self._can_frames_received += 1
+        self._can_open_retry_delay = CAN_OPEN_RETRY_MIN
 
         can_id, dlc = struct.unpack_from("<IB", frame, 0)
         if not (can_id & CAN_EFF_FLAG):
@@ -642,16 +658,19 @@ class RvcBattery:
         now = self._clock()
 
         if self._sock is None:
-            if (self._last_can_open_attempt is None
-                    or (now - self._last_can_open_attempt)
-                    >= CAN_OPEN_RETRY_AFTER):
+            if (self._next_can_open_attempt_at is None
+                    or now >= self._next_can_open_attempt_at):
                 self._open_can()
         elif (self._can_opened_at is not None
-              and (now - self._can_opened_at) >= CAN_REBIND_AFTER
-              and not self._state.measurements_fresh(now)):
-            print("No fresh Renogy measurements; rebinding %s" % CAN_INTERFACE,
-                  flush=True)
-            self._open_can()
+              and self._can_frames_received == 0
+              and self._no_traffic_rebinds < len(CAN_REBIND_DELAYS)):
+            delay = CAN_REBIND_DELAYS[self._no_traffic_rebinds]
+            if (now - self._can_opened_at) >= delay:
+                self._no_traffic_rebinds += 1
+                print("No CAN traffic on %s; boot-time rebind %d/%d"
+                      % (CAN_INTERFACE, self._no_traffic_rebinds,
+                         len(CAN_REBIND_DELAYS)), flush=True)
+                self._open_can()
 
         self._ensure_service(now)
         self._publish()

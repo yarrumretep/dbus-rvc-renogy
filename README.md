@@ -70,8 +70,9 @@ the aggregator's bank-level charge limit.
 
 - waits for live measurements and valid charge limits before registering its
   D-Bus BMS service, avoiding a disconnected service during GX startup;
-- rebinds its read-only CAN socket if boot-time interface setup leaves it
-  without fresh aggregate measurements;
+- makes at most two read-only CAN socket rebinds when a newly opened socket
+  sees no CAN traffic during boot, and exponentially backs off genuine open
+  failures;
 - discovers the priority-120 Renogy aggregate publisher across the valid RV-C
   address space and follows an aggregate-role change after the previous source
   becomes silent;

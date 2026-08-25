@@ -524,13 +524,37 @@ class ControllerStartupTests(unittest.TestCase):
 
     def test_can_socket_is_rebound_when_measurements_never_arrive(self):
         first_socket = self.sockets[0]
-        self.clock.now = bridge.CAN_REBIND_AFTER + 0.1
+        self.clock.now = bridge.CAN_REBIND_DELAYS[0] + 0.1
         self.controller._tick()
 
         self.assertEqual(len(self.sockets), 2)
         self.assertTrue(first_socket.closed)
         self.assertIn(first_socket.fd, self.glib.removed)
         self.assertIsNone(self.controller._service)
+
+    def test_no_traffic_rebind_is_bounded_during_bank_outage(self):
+        initial_socket_count = len(self.sockets)
+
+        for second in range(121):
+            self.clock.now = float(second)
+            self.controller._tick()
+
+        self.assertEqual(
+            len(self.sockets) - initial_socket_count,
+            len(bridge.CAN_REBIND_DELAYS))
+
+    def test_any_can_traffic_prevents_boot_time_rebind(self):
+        data = bytes(8)
+        can_id = bridge.CAN_EFF_FLAG | (0x12345 << 8) | 0x42
+        frame = struct.pack("<IB3x8s", can_id, len(data), data)
+        self.controller._sock.frames.append(frame)
+        self.controller._on_can_frame(
+            self.controller._sock.fd, self.glib.IO_IN)
+
+        self.clock.now = max(bridge.CAN_REBIND_DELAYS) + 1
+        self.controller._tick()
+
+        self.assertEqual(len(self.sockets), 1)
 
     def test_network_down_receive_error_is_retried_without_registering_bms(self):
         first_socket = self.sockets[0]
@@ -543,12 +567,30 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertIsNone(self.controller._sock)
         self.assertIsNone(self.controller._service)
 
-        self.clock.now = bridge.CAN_OPEN_RETRY_AFTER + 0.1
+        self.clock.now = bridge.CAN_OPEN_RETRY_MIN + 0.1
         self.controller._tick()
 
         self.assertEqual(len(self.sockets), 2)
         self.assertIs(self.controller._sock, self.sockets[1])
         self.assertIsNone(self.controller._service)
+
+    def test_missing_can_interface_uses_bounded_retry_backoff(self):
+        attempts = []
+
+        def failing_socket_factory(*args):
+            attempts.append(args)
+            raise OSError(19, "No such device")
+
+        controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=failing_socket_factory,
+            clock=self.clock)
+        for second in range(1, 21):
+            self.clock.now = float(second)
+            controller._tick()
+
+        # Initial attempt, then retries at 2, 6, and 14 seconds. The next
+        # exponentially backed-off attempt is not due until 30 seconds.
+        self.assertEqual(len(attempts), 4)
 
 
 class ServiceContractTests(unittest.TestCase):
