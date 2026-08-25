@@ -82,13 +82,44 @@ immediately.
 ## Offline tests
 
 ```sh
-python3 -m unittest -v test_dbus_rvc_renogy.py test_package_layout.py
+python3 -m unittest -v test_dbus_rvc_renogy.py test_rvc_inventory.py test_package_layout.py
 python3 -m py_compile dbus-rvc-renogy.py rvc-inventory.py
 ```
 
 The tests replay captured aggregate frames and cover polarity, capacity,
 limits, stale-data fail-safe behavior, invalid limits, the Venus 3.32 D-Bus
-contract, and the persistent service package.
+contract, per-pack diagnostic decoding, and the persistent service package.
+
+## Passive per-battery diagnostics
+
+`rvc-inventory.py` is a separate read-only diagnostic tool. It does not alter
+the bridge or transmit CAN frames. To compare the three REGO battery nodes:
+
+```sh
+/data/dbus-rvc-renogy/rvc-inventory.py --sa 8C,8D,8E
+```
+
+The inventory decodes each reported battery's charge/discharge contactor
+state, current, SOC, capacity, standard limit flags, and `DM_RV` lamp status.
+Renogy diagnostics whose SPN is outside RV-C's standardized Battery service
+point table remain identified numerically; their meaning must not be guessed
+into the live Venus alarm paths.
+
+To capture a warning transition, first start a 30-second baseline while the
+system is stable, then reproduce the change:
+
+```sh
+/data/dbus-rvc-renogy/rvc-inventory.py --sa 8C,8D,8E --watch-dm
+```
+
+The REGO manual distinguishes solid, slow-flash, fast-flash, strobe, and
+double-flash yellow patterns. Record the exact physical pattern along with the
+matching source address and decoded DM_RV line.
+
+Protocol and indicator references:
+
+- [RVIA RV-C Layer specification, July 31, 2025](https://www.rvia.org/system/files/media/file/RV-C%20Specification%20Full%20Layer%206-31-25_Final_0.pdf)
+- [Renogy REGO 12V 400Ah battery manual](https://ca.renogy.com/content/manual/RBT12400LFPL-SHBT-Manual.pdf)
 
 ## Optional configuration
 
@@ -201,7 +232,7 @@ tests and copy a clean archive of the tracked files. This does not require
 ```sh
 cd dbus-rvc-renogy
 git pull --ff-only
-python3 -m unittest -v test_dbus_rvc_renogy.py test_package_layout.py
+python3 -m unittest -v test_dbus_rvc_renogy.py test_rvc_inventory.py test_package_layout.py
 git archive --format=tar HEAD |
     ssh root@venus.local \
     'mkdir -p /data/dbus-rvc-renogy &&

@@ -27,6 +27,7 @@ class PackageLayoutTests(unittest.TestCase):
         paths = (
             ROOT / "install-service.sh",
             ROOT / "uninstall-service.sh",
+            ROOT / "rvc-inventory.py",
             ROOT / "services/dbus-rvc-renogy/run",
             ROOT / "services/dbus-rvc-renogy/log/run",
         )
