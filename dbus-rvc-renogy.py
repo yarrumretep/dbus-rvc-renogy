@@ -30,8 +30,10 @@ Safety properties:
 * Publishes zero charge current until a fresh, valid status-4 frame arrives.
 * Publishes zero charge current when the aggregate measurement stream is stale.
 * Rejects implausible charge-voltage limits and clamps only hard maxima.
-* Uses the charging-positive current convention expected by Venus OS; RV-C's
-  captured REGO current is negative while charging.
+* Converts RV-C's source-positive/discharge-positive current to the
+  charging-positive convention expected by Venus OS.
+* Logs a warning if the converted current persistently contradicts the
+  aggregate's own charge-detected status.
 """
 
 import math
@@ -42,7 +44,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.15"
+BRIDGE_VERSION = "0.4.16"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 
@@ -178,6 +180,9 @@ RENOGY_AGGREGATE_PRIORITY = 120
 # STATUS_1 is observed at 2 Hz. If a complete candidate aggregate appears and
 # the current source has been silent for this long, the aggregate role moved.
 SOURCE_SWITCH_AFTER = 3.0
+# Avoid warning on zero-current noise or a single asynchronous STATUS frame.
+POLARITY_MISMATCH_CURRENT = 1.0
+POLARITY_MISMATCH_AFTER = 5.0
 
 CAN_EFF_FLAG = 0x80000000
 CAN_EFF_MASK = 0x1FFFFFFF
@@ -273,10 +278,12 @@ class BatteryState:
         self.last_safe_charge_voltage = None
         self.status_6_flags = None
         self.discharge_contactor_status = None
+        self.charge_detected_status = None
 
         self.measurements_at = None
         self.limits_at = None
         self.status_6_at = None
+        self.status_11_at = None
 
     def update(self, dgn, data):
         """Decode one eight-byte bank aggregate payload.
@@ -295,8 +302,8 @@ class BatteryState:
             self.source_priority = _u8(data, 1)
             self.voltage = _volts(data, 2)
             rvc_current = _measured_amps(data, 4)
-            # The REGO/RV-C capture is negative while charging; Venus is
-            # charging-positive. This reproduces the working 3.32 service.
+            # RV-C current is positive when supplied by/discharging from the
+            # source; Venus battery current is positive while charging.
             self.current = None if rvc_current is None else -rvc_current
             self.measurements_at = now
 
@@ -324,7 +331,9 @@ class BatteryState:
 
         elif dgn == DGN_DC_SOURCE_STATUS_11:
             self.discharge_contactor_status = _pair(data, 2, 0)
+            self.charge_detected_status = _pair(data, 2, 4)
             self.full_capacity = _u16(data, 3)
+            self.status_11_at = now
 
         return True
 
@@ -346,6 +355,19 @@ class BatteryState:
         return (self.status_6_flags is not None
                 and self.status_6_at is not None
                 and (now - self.status_6_at) < STATUS_STALE_AFTER)
+
+    def polarity_mismatch(self, now=None):
+        """Whether fresh aggregate fields contradict the current polarity."""
+        now = self._clock() if now is None else now
+        status_11_fresh = (
+            self.status_11_at is not None
+            and (now - self.status_11_at) < STATUS_STALE_AFTER)
+        return (
+            self.measurements_fresh(now)
+            and status_11_fresh
+            and self.charge_detected_status == 1
+            and self.current is not None
+            and self.current < -POLARITY_MISMATCH_CURRENT)
 
     @staticmethod
     def _status_alarm_level(limit_status, disconnect_status):
@@ -489,6 +511,8 @@ class RvcBattery:
         self._next_can_open_attempt_at = None
         self._can_open_retry_delay = CAN_OPEN_RETRY_MIN
         self._fixed_priority_warning_printed = False
+        self._polarity_mismatch_since = None
+        self._polarity_warning_printed = False
         self._open_can()
         self._glib.timeout_add(1000, self._tick)
 
@@ -507,6 +531,8 @@ class RvcBattery:
         changed = source_address != self._aggregator_sa
         self._aggregator_sa = source_address
         self._state = state
+        self._polarity_mismatch_since = None
+        self._polarity_warning_printed = False
         if changed:
             print("Selected Renogy aggregate source 0x%02X"
                   % source_address, flush=True)
@@ -702,6 +728,28 @@ class RvcBattery:
         for path, value in self._state.snapshot().items():
             self._service[path] = value
 
+    def _check_polarity(self, now):
+        if not self._state.polarity_mismatch(now):
+            self._polarity_mismatch_since = None
+            self._polarity_warning_printed = False
+            return
+
+        if self._polarity_mismatch_since is None:
+            self._polarity_mismatch_since = now
+            return
+        if (not self._polarity_warning_printed
+                and (now - self._polarity_mismatch_since)
+                >= POLARITY_MISMATCH_AFTER):
+            source = ("unknown" if self._aggregator_sa is None
+                      else "0x%02X" % self._aggregator_sa)
+            print(
+                "Current-polarity warning for aggregate %s: Venus current "
+                "%.1f A indicates discharge while RV-C STATUS_11 reports "
+                "charge detected"
+                % (source, self._state.current),
+                flush=True)
+            self._polarity_warning_printed = True
+
     def _tick(self):
         now = self._clock()
 
@@ -721,6 +769,7 @@ class RvcBattery:
                 self._open_can()
 
         self._ensure_service(now)
+        self._check_polarity(now)
         self._publish()
         return True
 

@@ -86,7 +86,10 @@ the aggregator's bank-level charge limit.
 - derives Venus battery alarms from the standardized RV-C STATUS_6
   limit/disconnect fields instead of guessed voltage, current, SOC, or
   temperature thresholds;
-- converts REGO/RV-C current to Venus OS's charging-positive convention; and
+- converts REGO/RV-C current to Venus OS's charging-positive convention;
+- logs a warning if fresh current persistently indicates discharge while the
+  aggregate's standard `charge detected` field says that charging is active;
+  the check is diagnostic and does not alter the published value;
 - publishes full installed capacity from `DC_SOURCE_STATUS_11`, not remaining
   capacity from `DC_SOURCE_STATUS_3`, under both `/Capacity` and Venus's
   preferred `/InstalledCapacity` path;

@@ -272,6 +272,21 @@ class BatteryStateTests(unittest.TestCase):
         self.assertIsNone(
             self.state.snapshot()["/Info/MaxDischargeCurrent"])
 
+    def test_charge_detected_cross_checks_converted_current_polarity(self):
+        self.feed_complete_capture()
+        self.assertFalse(self.state.polarity_mismatch())
+
+        # Encode +37.6 A in RV-C's discharge-positive convention. Negation
+        # makes this -37.6 A on Venus, contradicting charge-detected=yes.
+        payload = bytearray.fromhex("01780a0120013577")
+        struct.pack_into("<I", payload, 4, 2000037600)
+        self.assertTrue(self.state.update(
+            bridge.DGN_DC_SOURCE_STATUS_1, payload))
+        self.assertTrue(self.state.polarity_mismatch())
+
+        self.clock.now = bridge.STATUS_STALE_AFTER + 0.1
+        self.assertFalse(self.state.polarity_mismatch())
+
     def test_valid_limits_are_clamped_only_at_hard_ceilings(self):
         self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
         # CVL 14.8 V and CCL 400 A are valid encodings but exceed the bridge's
@@ -601,6 +616,25 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertEqual(len(self.sockets), 2)
         self.assertIs(self.controller._sock, self.sockets[1])
         self.assertIsNone(self.controller._service)
+
+    def test_sustained_polarity_contradiction_is_logged_once(self):
+        self.feed_aggregate(0x8E)
+        payload = bytearray.fromhex("01780a0120013577")
+        struct.pack_into("<I", payload, 4, 2000037600)
+        self.feed_frame(0x8E, bridge.DGN_DC_SOURCE_STATUS_1, payload.hex())
+
+        with mock.patch("builtins.print") as print_mock:
+            self.controller._tick()
+            self.clock.now = bridge.POLARITY_MISMATCH_AFTER + 0.1
+            self.controller._tick()
+            self.controller._tick()
+
+        warnings = [
+            call for call in print_mock.call_args_list
+            if call.args and "Current-polarity warning" in call.args[0]
+        ]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("0x8E", warnings[0].args[0])
 
     def test_missing_can_interface_uses_bounded_retry_backoff(self):
         attempts = []
