@@ -522,21 +522,27 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertAlmostEqual(
             self.controller._service.paths["/Dc/0/Voltage"], 13.3)
 
-    def test_service_is_withheld_until_live_limits_are_available(self):
+    def test_service_is_withheld_until_discovered_source_is_complete(self):
         self.assertIsNone(self.controller._service)
 
-        self.controller._state.update(
-            bridge.DGN_DC_SOURCE_STATUS_1,
-            bytes.fromhex("01780a0120013577"))
-        self.controller._tick()
+        self.feed_frame(
+            0x8E, bridge.DGN_DC_SOURCE_STATUS_1,
+            "01780a0120013577")
+        self.assertIsNone(self.controller._aggregator_sa)
         self.assertIsNone(self.controller._service)
 
-        self.controller._state.update(
-            bridge.DGN_DC_SOURCE_STATUS_4,
-            bytes.fromhex("0178072001709403"))
-        self.controller._tick()
+        self.feed_frame(
+            0x8E, bridge.DGN_DC_SOURCE_STATUS_4,
+            "0178072001709403")
+        self.assertIsNone(self.controller._aggregator_sa)
+        self.assertIsNone(self.controller._service)
+
+        self.feed_frame(
+            0x8E, bridge.DGN_DC_SOURCE_STATUS_11,
+            "017815b004f40100")
 
         service = self.controller._service
+        self.assertEqual(self.controller._aggregator_sa, 0x8E)
         self.assertIsNotNone(service)
         self.assertTrue(service.registered)
         self.assertEqual(service.paths["/Connected"], 1)
