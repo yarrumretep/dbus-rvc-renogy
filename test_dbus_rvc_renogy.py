@@ -596,6 +596,23 @@ class ControllerStartupTests(unittest.TestCase):
             len(self.sockets) - initial_socket_count,
             len(bridge.CAN_REBIND_DELAYS))
 
+    def test_late_aggregate_registers_after_boot_rebinds_are_exhausted(self):
+        for second in range(121):
+            self.clock.now = float(second)
+            self.controller._tick()
+
+        self.assertEqual(
+            len(self.sockets), len(bridge.CAN_REBIND_DELAYS) + 1)
+        self.assertIs(self.controller._sock, self.sockets[-1])
+        self.assertFalse(self.controller._sock.closed)
+        self.assertIsNone(self.controller._service)
+
+        self.feed_aggregate(0x8E)
+
+        self.assertEqual(self.controller._aggregator_sa, 0x8E)
+        self.assertIsNotNone(self.controller._service)
+        self.assertEqual(self.controller._service.paths["/Connected"], 1)
+
     def test_any_filtered_can_traffic_prevents_boot_time_rebind(self):
         # Wrong DC-source instance: delivered by the DGN filter but not a
         # usable aggregate measurement.
