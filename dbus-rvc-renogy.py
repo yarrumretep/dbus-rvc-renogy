@@ -40,7 +40,7 @@ import sys
 import time
 
 
-BRIDGE_VERSION = "0.4.2"
+BRIDGE_VERSION = "0.4.3"
 
 CAN_INTERFACE = os.environ.get("RVC_RENOGY_CAN_INTERFACE", "can0")
 AGGREGATOR_SA = int(
@@ -67,9 +67,17 @@ HIGH_TEMPERATURE_ALARM = 50.0
 MEASUREMENTS_STALE_AFTER = 10.0
 # The aggregate limit frame was observed every five seconds.
 LIMITS_STALE_AFTER = 15.0
+# Reopen a socket that has not received measurement traffic. During Venus OS
+# startup can0 can be reconfigured after the service first binds to it.
+CAN_REBIND_AFTER = 10.0
+CAN_OPEN_RETRY_AFTER = 2.0
 
 CAN_EFF_FLAG = 0x80000000
 CAN_EFF_MASK = 0x1FFFFFFF
+# Linux constants are provided explicitly as fallbacks so the controller can
+# be exercised by offline tests on non-Linux development systems.
+SOCKET_AF_CAN = getattr(socket, "AF_CAN", 29)
+SOCKET_CAN_RAW = getattr(socket, "CAN_RAW", 1)
 
 DGN_DC_SOURCE_STATUS_1 = 0x1FFFD
 DGN_DC_SOURCE_STATUS_2 = 0x1FFFC
@@ -222,6 +230,17 @@ class BatteryState:
 
         return min(cvl, CVL_CEILING), min(max(ccl, 0.0), CCL_CEILING)
 
+    def ready_for_service(self, now=None):
+        """True only when registering a live BMS service is safe.
+
+        Publishing a disconnected service during GX startup can make DVCC
+        select it and immediately raise Lost BMS. Wait for both aggregate
+        measurements and valid charge limits before appearing on D-Bus.
+        """
+        now = self._clock() if now is None else now
+        cvl, _ccl = self._safe_limits(now)
+        return cvl is not None
+
     def snapshot(self, now=None):
         """Return the D-Bus values that should be published at this instant."""
         now = self._clock() if now is None else now
@@ -278,15 +297,27 @@ class BatteryState:
 
 
 class RvcBattery:
-    def __init__(self, glib, service_class):
+    def __init__(self, glib, service_class, socket_factory=None, clock=None):
         self._glib = glib
-        self._state = BatteryState()
-        self._service = self._create_service(service_class)
+        self._clock = clock or time.monotonic
+        self._state = BatteryState(clock=self._clock)
+        self._service_class = service_class
+        self._service = None
+        self._socket_factory = socket_factory or socket.socket
+        self._sock = None
+        self._can_watch = None
+        self._can_opened_at = None
+        self._last_can_open_attempt = None
         self._open_can()
-        self._glib.timeout_add(1000, self._publish)
+        self._glib.timeout_add(1000, self._tick)
 
     @staticmethod
-    def _create_service(service_class):
+    def _create_service(service_class, initial_values=None):
+        initial_values = initial_values or {}
+
+        def initial(path, default=None):
+            return initial_values.get(path, default)
+
         service = service_class(SERVICE_NAME, register=False)
         service.add_path("/Mgmt/ProcessName", "dbus-rvc-renogy")
         service.add_path("/Mgmt/ProcessVersion", BRIDGE_VERSION)
@@ -296,37 +327,84 @@ class RvcBattery:
         service.add_path("/ProductName", PRODUCT_NAME)
         service.add_path("/FirmwareVersion", None)
         service.add_path("/HardwareVersion", None)
-        service.add_path("/Connected", 0)
+        service.add_path("/Connected", initial("/Connected", 0))
         service.add_path("/Serial", None)
 
         for path in (
                 "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power",
                 "/Dc/0/Temperature", "/Soc", "/Soh", "/Capacity",
                 "/TimeToGo", "/Info/MaxChargeVoltage"):
-            service.add_path(path, None)
+            service.add_path(path, initial(path))
 
-        service.add_path("/Info/MaxChargeCurrent", 0.0)
+        service.add_path(
+            "/Info/MaxChargeCurrent",
+            initial("/Info/MaxChargeCurrent", 0.0))
 
         for alarm in (
                 "HighCurrent", "HighTemperature", "HighVoltage", "LowSoc",
                 "LowTemperature", "LowVoltage"):
-            service.add_path("/Alarms/%s" % alarm, 0)
+            path = "/Alarms/%s" % alarm
+            service.add_path(path, initial(path, 0))
 
         service.register()
         return service
 
+    def _close_can(self):
+        if self._can_watch is not None:
+            self._glib.source_remove(self._can_watch)
+            self._can_watch = None
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+
     def _open_can(self):
-        self._sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
-        self._sock.bind((CAN_INTERFACE,))
-        self._sock.setblocking(False)
-        self._glib.io_add_watch(
-            self._sock.fileno(), self._glib.IO_IN, self._on_can_frame)
+        self._close_can()
+        now = self._clock()
+        self._last_can_open_attempt = now
+        sock = None
+        try:
+            sock = self._socket_factory(
+                SOCKET_AF_CAN, socket.SOCK_RAW, SOCKET_CAN_RAW)
+            sock.bind((CAN_INTERFACE,))
+            sock.setblocking(False)
+            watch = self._glib.io_add_watch(
+                sock.fileno(), self._glib.IO_IN, self._on_can_frame)
+        except OSError as error:
+            try:
+                sock.close()
+            except (AttributeError, OSError):
+                pass
+            print("CAN open failed on %s: %s" % (CAN_INTERFACE, error),
+                  flush=True)
+            return False
+
+        self._sock = sock
+        self._can_watch = watch
+        self._can_opened_at = now
+        print("Listening for Renogy aggregate frames on %s" % CAN_INTERFACE,
+              flush=True)
+        return True
+
+    def _drop_can_from_callback(self, error):
+        print("CAN receive failed on %s: %s" % (CAN_INTERFACE, error),
+              flush=True)
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        self._sock = None
+        # Returning False removes the current GLib watch.
+        self._can_watch = None
 
     def _on_can_frame(self, _fd, _condition):
         try:
             frame = self._sock.recv(16)
         except BlockingIOError:
             return True
+        except OSError as error:
+            self._drop_can_from_callback(error)
+            return False
 
         if len(frame) < 16:
             return True
@@ -342,12 +420,46 @@ class RvcBattery:
             return True
 
         data = frame[8:8 + dlc]
-        self._state.update(dgn, data)
+        if self._state.update(dgn, data):
+            self._ensure_service()
+            if self._service is not None:
+                self._publish()
+        return True
+
+    def _ensure_service(self, now=None):
+        now = self._clock() if now is None else now
+        if self._service is not None or not self._state.ready_for_service(now):
+            return False
+
+        initial_values = self._state.snapshot(now)
+        self._service = self._create_service(
+            self._service_class, initial_values=initial_values)
+        print("Registered live BMS service %s" % SERVICE_NAME, flush=True)
         return True
 
     def _publish(self):
+        if self._service is None:
+            return
         for path, value in self._state.snapshot().items():
             self._service[path] = value
+
+    def _tick(self):
+        now = self._clock()
+
+        if self._sock is None:
+            if (self._last_can_open_attempt is None
+                    or (now - self._last_can_open_attempt)
+                    >= CAN_OPEN_RETRY_AFTER):
+                self._open_can()
+        elif (self._can_opened_at is not None
+              and (now - self._can_opened_at) >= CAN_REBIND_AFTER
+              and not self._state.measurements_fresh(now)):
+            print("No fresh Renogy measurements; rebinding %s" % CAN_INTERFACE,
+                  flush=True)
+            self._open_can()
+
+        self._ensure_service(now)
+        self._publish()
         return True
 
 
@@ -360,7 +472,7 @@ def main():
         1, "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python")
     from vedbus import VeDbusService
 
-    print("dbus-rvc-renogy %s" % BRIDGE_VERSION)
+    print("dbus-rvc-renogy %s" % BRIDGE_VERSION, flush=True)
     RvcBattery(GLib, VeDbusService)
     GLib.MainLoop().run()
 

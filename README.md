@@ -63,6 +63,10 @@ the aggregator's bank-level charge limit.
 
 `dbus-rvc-renogy.py` is read-only on CAN. It:
 
+- waits for live measurements and valid charge limits before registering its
+  D-Bus BMS service, avoiding a disconnected service during GX startup;
+- rebinds its read-only CAN socket if boot-time interface setup leaves it
+  without fresh aggregate measurements;
 - publishes zero charge current until measurement and charge-limit streams are
   both fresh and valid;
 - publishes zero charge current if either stream becomes stale;

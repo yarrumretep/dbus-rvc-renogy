@@ -106,6 +106,18 @@ class BatteryStateTests(unittest.TestCase):
             bridge.DGN_DC_SOURCE_STATUS_1, bytes.fromhex("01780a01")))
         self.assertFalse(self.state.update(0x12345, bytes(8)))
 
+    def test_service_readiness_requires_live_measurements_and_valid_limits(self):
+        self.assertFalse(self.state.ready_for_service())
+
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        self.assertFalse(self.state.ready_for_service())
+
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178072001709403")
+        self.assertTrue(self.state.ready_for_service())
+
+        self.clock.now = bridge.LIMITS_STALE_AFTER + 0.1
+        self.assertFalse(self.state.ready_for_service())
+
 
 class FakeService:
     def __init__(self, name, register=False):
@@ -119,6 +131,99 @@ class FakeService:
 
     def register(self):
         self.registered = True
+
+    def __setitem__(self, path, value):
+        self.paths[path] = value
+
+
+class FakeSocket:
+    next_fd = 10
+
+    def __init__(self, *_args):
+        self.fd = FakeSocket.next_fd
+        FakeSocket.next_fd += 1
+        self.bound = None
+        self.blocking = None
+        self.closed = False
+
+    def bind(self, address):
+        self.bound = address
+
+    def setblocking(self, blocking):
+        self.blocking = blocking
+
+    def fileno(self):
+        return self.fd
+
+    def close(self):
+        self.closed = True
+
+
+class FakeGLib:
+    IO_IN = 1
+
+    def __init__(self):
+        self.watches = {}
+        self.removed = []
+        self.timeout = None
+
+    def io_add_watch(self, fd, _condition, callback):
+        self.watches[fd] = callback
+        return fd
+
+    def source_remove(self, watch):
+        self.removed.append(watch)
+        self.watches.pop(watch, None)
+
+    def timeout_add(self, interval, callback):
+        self.timeout = (interval, callback)
+
+
+class ControllerStartupTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.glib = FakeGLib()
+        self.sockets = []
+
+        def socket_factory(*args):
+            sock = FakeSocket(*args)
+            self.sockets.append(sock)
+            return sock
+
+        self.controller = bridge.RvcBattery(
+            self.glib, FakeService, socket_factory=socket_factory,
+            clock=self.clock)
+
+    def test_service_is_withheld_until_live_limits_are_available(self):
+        self.assertIsNone(self.controller._service)
+
+        self.controller._state.update(
+            bridge.DGN_DC_SOURCE_STATUS_1,
+            bytes.fromhex("01780a0120013577"))
+        self.controller._tick()
+        self.assertIsNone(self.controller._service)
+
+        self.controller._state.update(
+            bridge.DGN_DC_SOURCE_STATUS_4,
+            bytes.fromhex("0178072001709403"))
+        self.controller._tick()
+
+        service = self.controller._service
+        self.assertIsNotNone(service)
+        self.assertTrue(service.registered)
+        self.assertEqual(service.paths["/Connected"], 1)
+        self.assertEqual(service.paths["/Info/MaxChargeCurrent"], 300.0)
+        self.assertEqual(service.paths["/Info/MaxChargeVoltage"], 14.4)
+
+    def test_can_socket_is_rebound_when_measurements_never_arrive(self):
+        first_socket = self.sockets[0]
+        self.clock.now = bridge.CAN_REBIND_AFTER + 0.1
+        self.controller._tick()
+
+        self.assertEqual(len(self.sockets), 2)
+        self.assertTrue(first_socket.closed)
+        self.assertIn(first_socket.fd, self.glib.removed)
+        self.assertIsNone(self.controller._service)
 
 
 class ServiceContractTests(unittest.TestCase):
