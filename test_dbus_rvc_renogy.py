@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Offline tests using frames captured from a Renogy REGO bank."""
+
+import importlib.util
+from pathlib import Path
+import unittest
+
+
+SCRIPT = Path(__file__).with_name("dbus-rvc-renogy.py")
+SPEC = importlib.util.spec_from_file_location("dbus_rvc_renogy", SCRIPT)
+bridge = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(bridge)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+class BatteryStateTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.state = bridge.BatteryState(clock=self.clock)
+
+    def feed(self, dgn, payload):
+        self.assertTrue(self.state.update(dgn, bytes.fromhex(payload)))
+
+    def feed_complete_capture(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_2, "01783c25aef40001")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_3, "0178c81404aeffff")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178072001709403")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_6, "0178000000ffffff")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_11, "017815b004f40100")
+
+    def test_capture_reproduces_native_service_values(self):
+        self.feed_complete_capture()
+        values = self.state.snapshot()
+
+        self.assertEqual(values["/Connected"], 1)
+        self.assertAlmostEqual(values["/Dc/0/Voltage"], 13.3)
+        # Captured RV-C current is -37.6 A; Venus must report charging-positive.
+        self.assertEqual(values["/Dc/0/Current"], 37.6)
+        self.assertEqual(values["/Dc/0/Power"], 500)
+        self.assertAlmostEqual(values["/Dc/0/Temperature"], 24.875)
+        self.assertEqual(values["/Soc"], 87.0)
+        self.assertEqual(values["/Soh"], 100.0)
+        self.assertEqual(values["/Info/MaxChargeVoltage"], 14.4)
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 300.0)
+        self.assertEqual(values["/Capacity"], 1200)
+
+    def test_remaining_capacity_is_not_published_as_capacity(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_3, "0178c81404aeffff")
+        values = self.state.snapshot()
+
+        self.assertEqual(self.state.remaining_capacity, 1044)
+        self.assertNotIn("/Capacity", values)
+
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_11, "017815b004f40100")
+        self.assertEqual(self.state.snapshot()["/Capacity"], 1200)
+
+    def test_measurement_timeout_disconnects_and_stops_charge(self):
+        self.feed_complete_capture()
+        self.clock.now = bridge.MEASUREMENTS_STALE_AFTER + 0.1
+        values = self.state.snapshot()
+
+        self.assertEqual(values["/Connected"], 0)
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
+
+    def test_limit_timeout_stops_charge_while_measurements_remain_live(self):
+        self.feed_complete_capture()
+        self.clock.now = bridge.LIMITS_STALE_AFTER + 0.1
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        values = self.state.snapshot()
+
+        self.assertEqual(values["/Connected"], 1)
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
+
+    def test_implausible_voltage_limit_stops_charge(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        # CVL raw 0x0000 = 0 V; CCL remains 300 A.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178070000709403")
+        values = self.state.snapshot()
+
+        self.assertEqual(values["/Info/MaxChargeCurrent"], 0.0)
+        self.assertNotIn("/Info/MaxChargeVoltage", values)
+
+    def test_valid_limits_are_clamped_only_at_hard_ceilings(self):
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_1, "01780a0120013577")
+        # CVL 14.8 V and CCL 400 A are valid encodings but exceed the bridge's
+        # configured hard ceilings of 14.6 V and 300 A.
+        self.feed(bridge.DGN_DC_SOURCE_STATUS_4, "0178072801409c03")
+        values = self.state.snapshot()
+
+        self.assertAlmostEqual(values["/Info/MaxChargeVoltage"], 14.6)
+        self.assertAlmostEqual(values["/Info/MaxChargeCurrent"], 300.0)
+
+    def test_wrong_instance_and_short_frames_are_ignored(self):
+        self.assertFalse(self.state.update(
+            bridge.DGN_DC_SOURCE_STATUS_1, bytes.fromhex("02780a0120013577")))
+        self.assertFalse(self.state.update(
+            bridge.DGN_DC_SOURCE_STATUS_1, bytes.fromhex("01780a01")))
+        self.assertFalse(self.state.update(0x12345, bytes(8)))
+
+
+class FakeService:
+    def __init__(self, name, register=False):
+        self.name = name
+        self.register_requested = register
+        self.paths = {}
+        self.registered = False
+
+    def add_path(self, path, value):
+        self.paths[path] = value
+
+    def register(self):
+        self.registered = True
+
+
+class ServiceContractTests(unittest.TestCase):
+    def test_service_matches_the_working_venus_332_contract(self):
+        service = bridge.RvcBattery._create_service(FakeService)
+
+        self.assertEqual(service.name, bridge.SERVICE_NAME)
+        self.assertTrue(service.registered)
+        self.assertEqual(service.paths["/DeviceInstance"], 1)
+        self.assertEqual(service.paths["/ProductId"], 0xB007)
+        self.assertEqual(
+            service.paths["/ProductName"], "CAN-bus BMS battery")
+        self.assertEqual(service.paths["/Mgmt/Connection"], "RV-C")
+        self.assertEqual(service.paths["/Info/MaxChargeCurrent"], 0.0)
+
+        expected_alarms = {
+            "/Alarms/HighCurrent",
+            "/Alarms/HighTemperature",
+            "/Alarms/HighVoltage",
+            "/Alarms/LowSoc",
+            "/Alarms/LowTemperature",
+            "/Alarms/LowVoltage",
+        }
+        self.assertEqual(
+            {path for path in service.paths if path.startswith("/Alarms/")},
+            expected_alarms)
+
+
+if __name__ == "__main__":
+    unittest.main()

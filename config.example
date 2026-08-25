@@ -1,0 +1,9 @@
+# Optional runtime overrides. Copy this file to
+# /data/dbus-rvc-renogy/config and uncomment only values verified for the
+# target Renogy REGO installation.
+
+# export RVC_RENOGY_CAN_INTERFACE=can0
+# export RVC_RENOGY_SOURCE_ADDRESS=0x8D
+# export RVC_RENOGY_DEVICE_INSTANCE=1
+# export RVC_RENOGY_CVL_CEILING=14.6
+# export RVC_RENOGY_CCL_CEILING=300.0

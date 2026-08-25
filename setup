@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# SetupHelper v6+ can install the service under services/ and register it for
+# automatic restoration after a Venus OS firmware update.
+standardPromptAndActions='yes'
+source "/data/SetupHelper/HelperResources/IncludeHelpers"
