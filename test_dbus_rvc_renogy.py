@@ -145,6 +145,7 @@ class FakeSocket:
         self.bound = None
         self.blocking = None
         self.closed = False
+        self.recv_error = None
 
     def bind(self, address):
         self.bound = address
@@ -154,6 +155,11 @@ class FakeSocket:
 
     def fileno(self):
         return self.fd
+
+    def recv(self, _size):
+        if self.recv_error is not None:
+            raise self.recv_error
+        raise BlockingIOError()
 
     def close(self):
         self.closed = True
@@ -223,6 +229,24 @@ class ControllerStartupTests(unittest.TestCase):
         self.assertEqual(len(self.sockets), 2)
         self.assertTrue(first_socket.closed)
         self.assertIn(first_socket.fd, self.glib.removed)
+        self.assertIsNone(self.controller._service)
+
+    def test_network_down_receive_error_is_retried_without_registering_bms(self):
+        first_socket = self.sockets[0]
+        first_socket.recv_error = OSError(100, "Network is down")
+
+        keep_watch = self.controller._on_can_frame(first_socket.fd, 0)
+
+        self.assertFalse(keep_watch)
+        self.assertTrue(first_socket.closed)
+        self.assertIsNone(self.controller._sock)
+        self.assertIsNone(self.controller._service)
+
+        self.clock.now = bridge.CAN_OPEN_RETRY_AFTER + 0.1
+        self.controller._tick()
+
+        self.assertEqual(len(self.sockets), 2)
+        self.assertIs(self.controller._sock, self.sockets[1])
         self.assertIsNone(self.controller._service)
 
 
