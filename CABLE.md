@@ -2,7 +2,7 @@
 
 This guide documents the adapter validated with the Renogy REGO G1
 `RBT12400LFPL-SHBT` battery and a Victron GX VE.Can RJ45 port. **Other Renogy
-models and revisions may use different LP16 pin assignments.** Verify every
+models and revisions may use different LP16 pin assignments (see below Renogy link for details).** Verify every
 conductor with a continuity meter before connecting the cable to powered
 equipment.
 
