@@ -1,8 +1,8 @@
 # REGO-to-VE.Can adapter cable
 
 This guide documents the adapter validated with the Renogy REGO G1
-`RBT12400LFPL-SHBT` battery and a Victron GX VE.Can RJ45 port. Other Renogy
-models and revisions may use different LP16 pin assignments. Verify every
+`RBT12400LFPL-SHBT` battery and a Victron GX VE.Can RJ45 port. **Other Renogy
+models and revisions may use different LP16 pin assignments.** Verify every
 conductor with a continuity meter before connecting the cable to powered
 equipment.
 
