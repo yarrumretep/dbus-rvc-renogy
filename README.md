@@ -20,6 +20,10 @@ Confirm these values from a passive bus capture before using the bridge with a
 different REGO topology. Runtime overrides are documented in
 [`config.example`](config.example).
 
+For the validated REGO G1 LP16-to-Victron VE.Can pinout, connector views, build
+instructions, and continuity checks, see
+[`CABLE.md`](CABLE.md).
+
 ## Why this exists
 
 Venus OS 3.32, using `dbus-rv-c 1.06.00`, created a generic managed-battery
